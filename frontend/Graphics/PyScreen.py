@@ -74,6 +74,7 @@ class PyScreen(Affichage):
         pygame.font.init()
         self.font = pygame.font.Font(None, 24)
         self.small_font = pygame.font.Font(None, 18)
+        self.notif_font = pygame.font.Font(None, 32) # For join/disconnect messages
 
         # Préparation des tuiles (claires et sombres) pour l'échiquier
         actual_tile_size = int(self.tile_size * self.zoom_factor) + 4
@@ -191,6 +192,33 @@ class PyScreen(Affichage):
             pygame.draw.circle(self.screen, army_color, (int(iso_x), int(iso_y)), border_radius, 2)
             self._draw_hp_bar(unit, iso_x, iso_y, unit_size)
 
+    def _draw_notifications(self):
+        """Draw notifications on the screen (joining players, etc)."""
+        from backend.GameModes.Online import Online
+        if not isinstance(self.battle_instance, Online):
+            return
+            
+        notifs = self.battle_instance.notifications
+        if not notifs:
+            return
+
+        start_y = 10
+        for text, timestamp in notifs:
+            # Only show recent notifications (e.g. 10 seconds)
+            if time.time() - timestamp > 10:
+                continue
+                
+            text_surf = self.notif_font.render(text, True, (255, 255, 0))
+            bg_rect = text_surf.get_rect(center=(self.WIDTH // 2, start_y + 20))
+            # Draw semi-transparent background
+            s = pygame.Surface((bg_rect.width + 20, bg_rect.height + 10))
+            s.set_alpha(150)
+            s.fill((0, 0, 0))
+            self.screen.blit(s, (bg_rect.x - 10, bg_rect.y - 5))
+            
+            self.screen.blit(text_surf, bg_rect)
+            start_y += 40
+
     def afficher(self, map: Map, army1: Army, army2: Army):
         # Mettre à jour les limites actuelles pour la minimap et le centrage
         self.current_map_bounds = Affichage.get_sizeMap(map, army1, army2)
@@ -235,12 +263,28 @@ class PyScreen(Affichage):
                 self.screen.blit(current_tile, rect.topleft)
 
         # Dessiner les unités de l'armée 1
-        for unit in army1.living_units():
-            self._draw_unit(unit, (50, 100, 255))
+        # In Online mode, we might have multiple other armies
+        from backend.GameModes.Online import Online
+        is_online = isinstance(getattr(self, "battle_instance", None), Online)
 
-        # Dessiner les unités de l'armée 2
-        for unit in army2.living_units():
-            self._draw_unit(unit, (255, 50, 50))
+        if is_online:
+            online_mode = self.battle_instance
+            # Draw my army (Blue)
+            for unit in online_mode.my_army.living_units():
+                self._draw_unit(unit, (50, 100, 255))
+            
+            # Draw other armies with their unique colors
+            for army_id, army in online_mode.othersArmy.items():
+                color = online_mode.army_colors.get(army_id, (255, 50, 50))
+                for unit in army.living_units():
+                    self._draw_unit(unit, color)
+        else:
+            # Classic 2-army mode
+            for unit in army1.living_units():
+                self._draw_unit(unit, (50, 100, 255))
+
+            for unit in army2.living_units():
+                self._draw_unit(unit, (255, 50, 50))
 
         # Dessiner les obstacles
         for unit in map.obstacles:
@@ -252,6 +296,9 @@ class PyScreen(Affichage):
 
         if self.show_army_stats:
             self._draw_army_stats(army1, army2)
+            
+        # Draw on-screen notifications
+        self._draw_notifications()
 
         if self.is_paused_state:
             self._draw_pause_indicator()
@@ -502,94 +549,94 @@ class PyScreen(Affichage):
         self.screen.blit(label, (minimap_x, minimap_y - 20))
 
     def _draw_army_stats(self, army1: Army, army2: Army):
-        # [Logique inchangée pour les statistiques]
         panel_x = 10
         panel_y = 10
-        panel_width = 300
+        panel_width = 280
         line_height = 25
         current_y = panel_y
 
-        panel_surface = pygame.Surface((panel_width, 400))
-        panel_surface.set_alpha(200)
-        panel_surface.fill((20, 20, 20))
+        from backend.GameModes.Online import Online
+        is_online = isinstance(self.battle_instance, Online)
+
+        # Draw panel background
+        panel_surface = pygame.Surface((panel_width, 500))
+        panel_surface.set_alpha(180)
+        panel_surface.fill((30, 30, 30))
         self.screen.blit(panel_surface, (panel_x, panel_y))
 
-        title = self.font.render("Army Statistics (F1-F4)", True, (255, 255, 255))
-        self.screen.blit(title, (panel_x + 5, current_y))
-        current_y += line_height + 5
+        title = self.font.render("Battle Information", True, (255, 255, 255))
+        self.screen.blit(title, (panel_x + 10, current_y + 10))
+        current_y += 45
 
-        if self.show_army1_details:
-            army1_units = army1.living_units()
-            army1_count = len(army1_units)
-            header1 = self.font.render(f"Army 1 ({type(army1.general).__name__}): {army1_count} units", True, (50, 100, 255))
-            self.screen.blit(header1, (panel_x + 5, current_y))
+        if is_online:
+            online = self.battle_instance
+            # 1. Local Player Info
+            color = (50, 100, 255) # Blue for local
+            pygame.draw.rect(self.screen, color, (panel_x + 10, current_y + 5, 15, 15))
+            txt = self.font.render(f"YOU ({online.my_id})", True, (255, 255, 255))
+            self.screen.blit(txt, (panel_x + 35, current_y))
             current_y += line_height
+            
+            count = len(online.my_army.living_units())
+            units_txt = self.small_font.render(f"  Units: {count}", True, (200, 200, 200))
+            self.screen.blit(units_txt, (panel_x + 35, current_y))
+            current_y += line_height + 10
 
-            if self.show_unit_counts:
-                knights = sum(1 for u in army1_units if isinstance(u, Knight))
-                pikemen = sum(1 for u in army1_units if isinstance(u, Pikeman))
-                crossbowmen = sum(1 for u in army1_units if isinstance(u, Crossbowman))
-                if knights > 0:
-                    self.screen.blit(self.small_font.render(f"  Knights: {knights}", True, (200, 200, 200)), (panel_x + 5, current_y))
-                    current_y += line_height - 5
-                if pikemen > 0:
-                    self.screen.blit(self.small_font.render(f"  Pikemen: {pikemen}", True, (200, 200, 200)), (panel_x + 5, current_y))
-                    current_y += line_height - 5
-                if crossbowmen > 0:
-                    self.screen.blit(self.small_font.render(f"  Crossbowmen: {crossbowmen}", True, (200, 200, 200)), (panel_x + 5, current_y))
-                    current_y += line_height - 5
-            current_y += 5
+            pygame.draw.line(self.screen, (100, 100, 100), (panel_x + 10, current_y), (panel_x + panel_width - 10, current_y))
+            current_y += 15
+
+            # 2. Other Players Info
+            others_title = self.font.render("Other Players:", True, (200, 200, 200))
+            self.screen.blit(others_title, (panel_x + 10, current_y))
+            current_y += 30
+
+            if not online.othersArmy:
+                none_txt = self.small_font.render("  (No other players)", True, (150, 150, 150))
+                self.screen.blit(none_txt, (panel_x + 10, current_y))
+                current_y += line_height
+            else:
+                for aid, army in online.othersArmy.items():
+                    color = online.army_colors.get(aid, (255, 50, 50))
+                    pygame.draw.rect(self.screen, color, (panel_x + 10, current_y + 5, 15, 15))
+                    
+                    p_txt = self.font.render(f"Player {aid}", True, (255, 255, 255))
+                    self.screen.blit(p_txt, (panel_x + 35, current_y))
+                    current_y += line_height
+                    
+                    u_count = len(army.living_units())
+                    u_txt = self.small_font.render(f"  Units: {u_count}", True, (200, 200, 200))
+                    self.screen.blit(u_txt, (panel_x + 35, current_y))
+                    current_y += line_height + 5
         else:
-            self.screen.blit(self.small_font.render("Army 1: (Press F2)", True, (150, 150, 150)), (panel_x + 5, current_y))
+            # Classic Mode
+            # Army 1
+            pygame.draw.rect(self.screen, (50, 100, 255), (panel_x + 10, current_y + 5, 15, 15))
+            txt1 = self.font.render("Army 1", True, (255, 255, 255))
+            self.screen.blit(txt1, (panel_x + 35, current_y))
+            current_y += line_height
+            
+            # Army 2
+            pygame.draw.rect(self.screen, (255, 50, 50), (panel_x + 10, current_y + 5, 15, 15))
+            txt2 = self.font.render("Army 2", True, (255, 255, 255))
+            self.screen.blit(txt2, (panel_x + 35, current_y))
             current_y += line_height
 
-        pygame.draw.line(self.screen, (100, 100, 100), (panel_x + 5, current_y), (panel_x + panel_width - 5, current_y))
-        current_y += line_height
-
-        if self.show_army2_details:
-            army2_units = army2.living_units()
-            army2_count = len(army2_units)
-            header2 = self.font.render(f"Army 2 ({type(army2.general).__name__}): {army2_count} units", True, (255, 50, 50))
-            self.screen.blit(header2, (panel_x + 5, current_y))
-            current_y += line_height
-
-            if self.show_unit_counts:
-                knights = sum(1 for u in army2_units if isinstance(u, Knight))
-                pikemen = sum(1 for u in army2_units if isinstance(u, Pikeman))
-                crossbowmen = sum(1 for u in army2_units if isinstance(u, Crossbowman))
-                if knights > 0:
-                    self.screen.blit(self.small_font.render(f"  Knights: {knights}", True, (200, 200, 200)), (panel_x + 5, current_y))
-                    current_y += line_height - 5
-                if pikemen > 0:
-                    self.screen.blit(self.small_font.render(f"  Pikemen: {pikemen}", True, (200, 200, 200)), (panel_x + 5, current_y))
-                    current_y += line_height - 5
-                if crossbowmen > 0:
-                    self.screen.blit(self.small_font.render(f"  Crossbowmen: {crossbowmen}", True, (200, 200, 200)), (panel_x + 5, current_y))
-                    current_y += line_height - 5
-        else:
-            self.screen.blit(self.small_font.render("Army 2: (Press F3)", True, (150, 150, 150)), (panel_x + 5, current_y))
-            current_y += line_height
-
-        # Aide textuelle
+        # Bottom help section (simplified)
+        current_y = panel_y + 420
+        pygame.draw.line(self.screen, (100, 100, 100), (panel_x + 10, current_y), (panel_x + panel_width - 10, current_y))
         current_y += 10
-        help_text = [
-            "Contrôles (Souris):",
-            "Molette - Zoom / Défilement",
-            "Clic Gauche - Glisser la carte",
-            "Clic sur Minimap - Téléportation",
-            "Contrôles (Clavier):",
-            "M - Afficher/Masquer Minimap",
-            "F1-F4 - Statistiques et Détails",
-            "F11 - Sauvegarde Rapide",
-            "F12 - Menu de Chargement",
-            "ESPACE - Pause / Reprise",
-            "Z / X - Vitesse +/-",
-            "C - Centrer la caméra",
-            "ECHAP - Quitter le jeu"
+        
+        help_lines = [
+            "Mouse Wheel: Zoom",
+            "Drag Map: Left Click",
+            "Space: Pause",
+            "C: Center Camera",
+            "Esc: Quit"
         ]
-        for line in help_text:
-            self.screen.blit(self.small_font.render(line, True, (150, 150, 150)), (panel_x + 5, current_y))
-            current_y += line_height - 5
+        for line in help_lines:
+            help_surf = self.small_font.render(line, True, (150, 150, 150))
+            self.screen.blit(help_surf, (panel_x + 10, current_y))
+            current_y += 15
 
     def _quick_save(self):
         import os

@@ -115,9 +115,11 @@ def main():
             is_first=is_first
         )
 
-        if args.join : gameMode.know_ip.add(args.join)
+        if args.join : 
+            # In multi-player mode, know_ip stores (ip, port)
+            gameMode.know_ip.add((args.join, args.remote_port))
 
-        print(gameMode.know_ip)
+        print(f"Know IPs: {gameMode.know_ip}")
 
         map_obj = load_map_from_file(args.map_file)
         gameMode.my_army = load_army_from_file(args.army_file)

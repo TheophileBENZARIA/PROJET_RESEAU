@@ -2,26 +2,9 @@ import socket
 import json
 import threading
 import queue
+import re
 
-# ============================================================
-#   NetworkBridge — Pont réseau Python ↔ Proxy C (UDP)
-#
-#   Fonctionnalités clés :
-#   - Numérotation de séquence : chaque paquet sortant estampillé
-#     "seq". Les paquets de type SYNC_UPDATE reçus hors ordre
-#     (seq ≤ dernier seq reçu) sont ignorés, évitant l'erreur
-#     de logique causée par le réordonnancement UDP.
-#   - JSON compact : separators=(',',':') supprime les espaces
-#     inutiles et minimise la taille du datagramme UDP pour
-#     rester sous la limite MTU de 1500 octets.
-#   - Socket timeout de 1 s : le thread peut vérifier
-#     is_connected et sortir proprement sans WinError 10038.
-# ============================================================
-
-# Types de messages dont l'ordre est critique :
-# si un paquet plus récent est arrivé avant, l'ancien est ignoré.
 _TYPES_SEQUENCES = {"SYNC_UPDATE"}
-
 
 class NetworkBridge:
     def __init__(self, host='127.0.0.1', port=5000):
@@ -29,217 +12,109 @@ class NetworkBridge:
         self.port = port
         self.sock = None
         self.is_connected = False
-
-        # File d'attente thread-safe
-        # Sépare le thread réseau de la boucle principale du jeu
         self.incoming_queue = queue.Queue()
         self.receive_thread = None
-
-        # Handle to the Proxy C subprocess
         self.proxy_process = None
-
-        # Numéro de séquence sortant : incrémenté à chaque envoi
         self._seq_out = 0
-
-        # Dernier numéro de séquence reçu par type de message
-        # (seuls les types dans _TYPES_SEQUENCES sont filtrés)
+        # Track sequence numbers per sender: self._seq_in[sender_addr][msg_type]
         self._seq_in = {}
 
-    # ---- Connexion ----
     def connect(self, remote_ip=None, lan_port=6000, remote_port=6000):
-        """Ouvre le socket UDP local, démarre le proxy C et le thread de réception."""
-        
-        # Démarrage automatique du programme C Proxy
         try:
             import subprocess
             import os
-            
-            # Paths relative to project root or current dir
-            proxy_path = os.path.join("network", "proxy_udp.exe")
-            if not os.path.exists(proxy_path):
-                # Try local dir if not in network/
-                proxy_path = "proxy_udp.exe"
+            proxy_path = os.path.join("network", "proxy_udp_multiplayers.exe")
+            if not os.path.exists(proxy_path): proxy_path = "proxy_udp_multiplayers.exe"
 
-            args = [proxy_path]
-            if remote_ip:
-                args.append(remote_ip)
-            else:
-                args.append("server")
-            
-            # Use provided ports
-            args.append(str(self.port))      # py_port
-            args.append(str(lan_port))     # lan_listen_port
-            args.append(str(remote_port))  # remote_dest_port
-
-            print(f"[NetworkBridge] Starting Proxy C: {args}")
+            args = [proxy_path, (remote_ip if remote_ip else "server"), str(self.port), str(lan_port), str(remote_port)]
+            print(f"[NetworkBridge] Launching Proxy: {args}")
             self.proxy_process = subprocess.Popen(args, creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0)
         except Exception as e:
-            print(f"[NetworkBridge] Warning: Could not start Proxy C automatically: {e}")
+            print(f"[NetworkBridge] Warning: Proxy start failed: {e}")
 
-        # Give Proxy C a moment to bind to its ports
         import time
         time.sleep(0.5)
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # Timeout de 1 s : le thread peut vérifier is_connected périodiquement
         self.sock.settimeout(1.0)
         self.server_addr = (self.host, self.port)
         self.is_connected = True
+        self.sock.sendto(b"\n", self.server_addr) # Poke proxy
 
-        # Premier paquet pour que le Proxy C enregistre notre port éphémère
-        self.sock.sendto(b"\n", self.server_addr)
-
-        print("[NetworkBridge] Prêt en UDP ! (Proxy C sur port {})".format(self.port))
-
-        # Lancer le thread de réception en arrière-plan (daemon = stoppe avec le jeu)
         self.receive_thread = threading.Thread(target=self._listen_loop, daemon=True)
         self.receive_thread.start()
         return True
 
-    # ---- Thread de réception ----
     def _listen_loop(self):
-        """
-        Thread en arrière-plan :
-        - Reçoit les datagrammes UDP depuis le Proxy C.
-        - Filtre les paquets obsolètes (numéro de séquence trop ancien).
-        - Place les messages valides dans la file d'attente.
-        """
+        # Regex to match "[IP:PORT]JSON"
+        tag_regex = re.compile(r"^\[(\d+\.\d+\.\d+\.\d+):(\d+)\](.*)$")
+        
         while self.is_connected:
             try:
                 data, addr = self.sock.recvfrom(65535)
-                if not data:
-                    continue
+                if not data: continue
+                
+                raw_str = data.decode('utf-8', errors='ignore').strip()
+                if not raw_str: continue
 
-                ligne = data.decode('utf-8').strip()
-                if not ligne:
-                    continue
+                # Extract sender info from tag
+                match = tag_regex.match(raw_str)
+                if not match: continue # Ignore untagged packets (like proxy startup pokes)
+                
+                sender_ip = match.group(1)
+                sender_port = int(match.group(2))
+                json_str = match.group(3)
+                sender_id = f"{sender_ip}:{sender_port}"
 
                 try:
-                    msg = json.loads(ligne)
-                    # Include sender IP for peer discovery
-                    msg["_sender_ip"] = addr[0]
+                    msg = json.loads(json_str)
+                    msg["_sender_ip"] = sender_ip
+                    msg["_sender_port"] = sender_port
                 except json.JSONDecodeError:
-                    # Paquet corrompu ou tronqué (fragmentation UDP) → ignorer
-                    print(f"[NetworkBridge] Erreur JSON ignorée "
-                          f"({len(ligne)} octets reçus)")
                     continue
 
                 msg_type = msg.get("type")
-                seq      = msg.get("seq", -1)
+                seq = msg.get("seq", -1)
 
-                # ---- Filtre de réordonnancement ----
-                # Pour les types sensibles à l'ordre (ex: SYNC_UPDATE),
-                # on ignore tout paquet dont le seq est inférieur ou égal
-                # au dernier seq reçu : c'est un paquet retardé.
                 if msg_type in _TYPES_SEQUENCES and seq != -1:
-                    dernier = self._seq_in.get(msg_type, -1)
-                    if seq <= dernier:
-                        # Paquet hors ordre → ignorer silencieusement
-                        continue
-                    self._seq_in[msg_type] = seq
+                    if sender_id not in self._seq_in: self._seq_in[sender_id] = {}
+                    dernier = self._seq_in[sender_id].get(msg_type, -1)
+                    if seq <= dernier: continue
+                    self._seq_in[sender_id][msg_type] = seq
 
                 self.incoming_queue.put(msg)
 
-            except socket.timeout:
-                # Timeout normal : reboucler et vérifier is_connected
-                continue
-            except ConnectionResetError:
-                # Sur Windows, se produit si le Proxy n'est pas encore prêt (ICMP Port Unreachable)
-                # On ignore et on continue d'écouter
-                continue
-            except OSError:
-                # Socket fermé par disconnect() → sortie propre
-                break
+            except socket.timeout: continue
             except Exception as e:
-                if self.is_connected:
-                    print(f"[NetworkBridge] Erreur dans le thread de réception : {e}")
+                if self.is_connected: print(f"[NetworkBridge] Recv error: {e}")
                 break
 
-        print("[NetworkBridge] Thread de réception arrêté.")
-
-    # ---- Envoi de messages ----
-    def send_message(self, msg_type, destination, payload_dict=None):
-        """
-        Envoie un message JSON vers le Proxy C en UDP.
-
-        Structure du datagramme :
-        {
-            "size": <taille en octets>
-            "dest" : <ip destination>
-            "dep" : <ip depart>
-            "seq":     <numéro de séquence entier croissant>,
-            "type":    <type du message>,
-            "payload": <données utiles>
-        }
-
-        Le JSON est sérialisé sans espaces (separators=(',',':'))
-        pour minimiser la taille et rester sous le MTU de 1500 octets.
-        """
-        if not self.is_connected:
-            return False
-
-        if payload_dict is None:
-            payload_dict = {}
-
-        # Horodatage par numéro de séquence
+    def send_message(self, msg_type, destination, payload_dict=None, dest_port=None):
+        if not self.is_connected: return False
         self._seq_out += 1
-
         message = {
-            "size": len(payload_dict),
             "dest": destination,
-            "dep": None , #recuperer l'ip de la machine
-            "seq":     self._seq_out,
-            "type":    msg_type,
-            "payload": payload_dict
+            "dest_port": dest_port,
+            "seq": self._seq_out,
+            "type": msg_type,
+            "payload": payload_dict if payload_dict else {}
         }
-
         try:
-            # JSON compact : pas d'espaces → taille minimale
             donnees = json.dumps(message, separators=(',', ':')) + '\n'
             self.sock.sendto(donnees.encode('utf-8'), self.server_addr)
-
-            # Avertir si le datagramme dépasse le MTU standard (1500 octets)
-            taille = len(donnees.encode('utf-8'))
-            if taille > 1400:
-                print(f"[NetworkBridge] ATTENTION : datagramme volumineux "
-                      f"({taille} octets, MTU ≈ 1500). Risque de fragmentation !")
             return True
         except Exception as e:
-            print(f"[NetworkBridge] Erreur lors de l'envoi ({msg_type}) : {e}")
+            print(f"[NetworkBridge] Send error: {e}")
             return False
 
-    # ---- Lecture non-bloquante ----
     def get_updates(self):
-        """
-        Retourne tous les messages disponibles dans la file,
-        sans bloquer la boucle de jeu principale.
-        """
-        messages = []
-        while not self.incoming_queue.empty():
-            messages.append(self.incoming_queue.get())
-        return messages
+        updates = []
+        while not self.incoming_queue.empty(): updates.append(self.incoming_queue.get())
+        return updates
 
-    # ---- Déconnexion propre ----
     def disconnect(self):
-        """
-        Ferme la connexion de façon sécurisée :
-        is_connected = False d'abord → le thread sort à son prochain
-        timeout → puis on ferme le socket (évite WinError 10038).
-        """
-        self.is_connected = False   # Signal au thread de s'arrêter
-        
-        # Terminer le processus Proxy C s'il est en cours
+        self.is_connected = False
         if self.proxy_process:
-            try:
-                self.proxy_process.terminate()
-                print("[NetworkBridge] Proxy C terminé.")
-            except Exception as e:
-                print(f"[NetworkBridge] Erreur lors de la fermeture du Proxy C : {e}")
-            self.proxy_process = None
-
-        if self.sock:
-            try:
-                self.sock.close()
-            except Exception:
-                pass
-            self.sock = None
+            try: self.proxy_process.terminate()
+            except: pass
+        if self.sock: self.sock.close()

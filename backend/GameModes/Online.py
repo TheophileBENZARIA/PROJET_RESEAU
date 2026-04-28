@@ -2,6 +2,8 @@ import ast
 import json
 import os
 import uuid
+import time
+import random
 from pathlib import Path
 
 from backend.Class.Army import Army
@@ -10,311 +12,139 @@ from backend.Utils.class_by_name import general_from_name
 from backend.Class.Units.Knight import Knight
 from backend.Class.Units.Pikeman import Pikeman
 from backend.Class.Units.Crossbowman import Crossbowman
-from backend.Utils.convert_json import json_to_army, army_to_json, army_to_dict
+from backend.Utils.convert_json import json_to_army, army_to_dict
 from network.network_api import NetworkBridge
 
-
-# client1 envoie les ordres de sont général -> client2 execute les ordres et envoie l'état du monde -> client1
-
-
 class Online(GameMode):
-
     def __init__(self, py_port=5000, lan_port=6000, remote_port=6000, is_first=True):
         super().__init__()
-        self.max_tick = None
         self.tick = 0
-        self.tick_delay = 1.0
+        self.tick_delay = 0.5 # SLOWER: 0.5s per tick instead of 0.05s
         self.frame_delay = 0.05
-        self.verbose = True
         self.my_army = None
         self.othersArmy = {} 
+        self.peer_last_seen = {} 
+        self.army_colors = {}    
         self.network_bridge = NetworkBridge(port=py_port)
-        self.know_ip= set()
-        self.my_id = str(uuid.uuid4())
+        self.know_ip = set() 
+        self.my_id = str(uuid.uuid4())[:8]
         self.lan_port = lan_port
         self.remote_port = remote_port
-        self.is_first = is_first # Host is Blue (P1), Joiner is Red (P2)
+        self.is_first = is_first 
         self.has_started = False
+        self.timeout_duration = 5.0 
+        self.notifications = []
 
     def flat(self):
         new = Army()
-        all_units = []
-        for army_id in self.othersArmy:
-            all_units.extend(self.othersArmy[army_id].units)
-        new.units = all_units
+        for army in self.othersArmy.values(): new.units.extend(army.units)
         return new
 
-    def continue_condition(self):
-        return True
+    def continue_condition(self): return True
 
     def end(self):
-        # Fermeture de l'affichage
-        if hasattr(self.affichage, "shutdown"):
-            self.affichage.shutdown()
-        
-        # Fermeture de la connexion réseau et du Proxy C
-        if hasattr(self, "network_bridge"):
-            print("[Online] Fermeture de la connexion réseau...")
-            self.network_bridge.disconnect()
+        if hasattr(self.affichage, "shutdown"): self.affichage.shutdown()
+        if hasattr(self, "network_bridge"): self.network_bridge.disconnect()
+
+    def save(self): pass
+
+    def add_notification(self, text):
+        self.notifications.append((text, time.time()))
+        if len(self.notifications) > 6: self.notifications.pop(0)
 
     def message_receive(self):
-        """
-        Récupère les mises à jour du pont réseau et met à jour l'état des autres armées.
-        Découvre également automatiquement les nouveaux pairs.
-        """
         messages = self.network_bridge.get_updates()
-        updated = False
         for msg in messages:
-            # Découverte automatique : ajouter l'expéditeur à know_ip s'il n'y est pas déjà
             sender_ip = msg.get("_sender_ip")
-            if sender_ip and sender_ip not in self.know_ip:
-                print(f"[Online] Nouveau pair découvert : {sender_ip}")
-                self.know_ip.add(sender_ip)
-
-            # Le payload envoyé est un dictionnaire {id: army_data}
+            sender_port = msg.get("_sender_port") # From tagged proxy header
             payload = msg.get("payload", {})
-            if isinstance(payload, dict):
-                for army_id, army_data in payload.items():
-                    if army_id != self.my_id:
-                        # Utiliser le chargement basé sur le dictionnaire
-                        try:
-                            self.othersArmy[army_id] = json_to_army(army_data)
-                        except Exception as e:
-                            print(f"[Online] Erreur lors du chargement de l'armée de {army_id} : {e}")
-                        updated = True
-                    else :
-                        self.my_army = json_to_army(army_data)
-        return updated
+            if not isinstance(payload, dict): continue
+            
+            # Discovery using REAL sender port
+            if sender_ip and sender_port:
+                peer = (sender_ip, int(sender_port))
+                if peer not in self.know_ip and not (sender_ip == "127.0.0.1" and int(sender_port) == self.lan_port):
+                    self.add_notification(f"Nouveau pair connecte: {sender_port}")
+                    self.know_ip.add(peer)
+
+            # Peer exchange
+            for p_info in payload.get("_ki", []):
+                p_tuple = (p_info[0], int(p_info[1]))
+                if p_tuple not in self.know_ip and not (p_tuple[0] == "127.0.0.1" and p_tuple[1] == self.lan_port):
+                    self.know_ip.add(p_tuple)
+
+            # Sync armies
+            for aid, army_data in payload.items():
+                if aid.startswith("_") or aid == self.my_id: continue
+                self.peer_last_seen[aid] = time.time()
+                new_army = json_to_army(army_data)
+                if aid not in self.othersArmy:
+                    self.add_notification(f"Joueur {aid} a rejoint !")
+                    self.othersArmy[aid] = new_army
+                    self.army_colors[aid] = (random.randint(50,255), random.randint(50,255), random.randint(50,255))
+                else:
+                    self.othersArmy[aid].units = new_army.units
+                    self.othersArmy[aid].general = new_army.general
+        return len(messages) > 0
 
     def run(self):
-        """
-        Étape principale de la simulation pour le mode Online :
-        1. Recevoir les mises à jour des pairs
-        2. Si aucun pair, attendre et afficher 'En attente...'
-        3. Si pair trouvé, exécuter la simulation
-        4. Diffuser l'état local aux pairs
-        """
         self.message_receive()
+        now = time.time()
+        to_remove = [aid for aid, last in self.peer_last_seen.items() if now - last > self.timeout_duration]
+        for aid in to_remove:
+            self.add_notification(f"Joueur {aid} a quitte")
+            if aid in self.othersArmy: del self.othersArmy[aid]
+            del self.peer_last_seen[aid]
 
-        if not self.othersArmy:
-            if self.tick % 100 == 0:
-                print("En attente d'un autre joueur...")
-            # Diffuser quand même notre présence pour que l'autre puisse nous trouver
-            self._broadcast_state()
-            return
+        if not self.my_army.isEmpty():
+            all_enemies = self.flat()
+            if not all_enemies.isEmpty():
+                # 1. Authoritative MOVE
+                targets = self.my_army.general.getTargets(self.map, all_enemies)
+                orders = self.my_army.testTargets(targets, self.map, all_enemies)
+                self.my_army.execOrder([o for o in orders if o.kind == "move"], all_enemies)
+                # 2. Authoritative HP (Decide damage to OURSELVES)
+                for enemy in self.othersArmy.values():
+                    if not enemy.general: continue
+                    e_targets = enemy.general.getTargets(self.map, self.my_army)
+                    e_orders = enemy.testTargets(e_targets, self.map, self.my_army)
+                    enemy.execOrder([o for o in e_orders if o.kind != "move"], self.my_army)
 
-        if not self.has_started:
-            print("Joueur rejoint ! Début de la bataille.")
-            self.has_started = True
-
-        # Exécuter la logique de combat pour NOS unités
-        all_enemies = self.flat()
-        self.my_army.fight(self.map, otherArmy=all_enemies)
-        self.update_dead(all_enemies)
-        
-        # Incrémenter le tick
         self.tick += 1
-        
         self._broadcast_state()
 
     def _broadcast_state(self):
-        payload = self.create_payload()
-        for ip in self.know_ip:
-            self.network_bridge.send_message("SYNC_UPDATE", ip, payload)
-
-    def update_dead(self, all_enemies):
-        for army in self.othersArmy.values():
-            army.units = [u for u in army.units if u in all_enemies.units]
-
-    @property
-    def army1(self):
-        return self.my_army
-
-    @property
-    def army2(self):
-        return self.flat()
-
-    def launch(self):
-        # If we are the joiner, mirror our units to the right immediately
-        if not self.is_first and self.my_army:
-            print("[Online] Mirroring army to the right side...")
-            for unit in self.my_army.units:
-                if unit.position:
-                    new_x = (self.map.width - 1) - unit.position[0]
-                    unit.position = (new_x, unit.position[1])
-
-        self.affichage.initialiser()
-        remote_ip = list(self.know_ip)[0] if self.know_ip else None
-        self.network_bridge.connect(remote_ip=remote_ip, lan_port=self.lan_port, remote_port=self.remote_port)
-
-    def save(self):
-        pass
-
-    def load_payload(self, json_payload):
-        print("ef", json_payload)
-        army = ast.literal_eval(json_payload)
-        print(army)
-        for k in army.keys():
-            if k == self.my_id:
-                self.my_army = json_to_army(army[k])
-            else:
-                self.othersArmy[k] = json_to_army(army[k])
+        p = self.create_payload()
+        for ip, port in self.know_ip:
+            self.network_bridge.send_message("SYNC_UPDATE", ip, p, dest_port=port)
 
     def create_payload(self):
-        # Only send OUR army state to avoid redundant data
-        result = {}
-        for army_id, army in self.othersArmy.items():
-             result[army_id] = army_to_dict(army)
-        result[self.my_id] = army_to_dict(self.my_army)
-        return result
+        return {
+            self.my_id: army_to_dict(self.my_army),
+            "_ki": [list(p) for p in self.know_ip],
+            "_lp": self.lan_port
+        }
 
+    @property
+    def army1(self): return self.my_army
+    @property
+    def army2(self): return self.flat()
+
+    def launch(self):
+        if not self.is_first and self.my_army:
+            for u in self.my_army.units:
+                if u.position: u.position = ((self.map.width - 1) - u.position[0], u.position[1])
+        self.affichage.initialiser()
+        initial_ip = list(self.know_ip)[0][0] if self.know_ip else None
+        print(f"[Online] Start. Initial Peer: {initial_ip}:{self.remote_port}")
+        self.network_bridge.connect(remote_ip=initial_ip, lan_port=self.lan_port, remote_port=self.remote_port)
 
     @army1.setter
     def army1(self, value):
         value.gameMode = self
         self.my_army = value
-
     @army2.setter
     def army2(self, value):
         value.gameMode = self
 
-    def to_dict(self):
-        """Serialize battle state to dictionary for saving."""
-        # Serialize units with their IDs
-        units_by_id = {}
-        for unit in self.army1.units + self.army2.units:
-            units_by_id[unit.id] = {
-                "id": unit.id,
-                "unit_type": unit.unit_type(),
-                "hp": unit.hp,
-                "position": list(unit.position) if unit.position else None,
-                "cooldown": unit.cooldown,
-                "army": "army1" if unit in self.army1.units else "army2"
-            }
-
-        # Serialize generals (including AI state)
-        general1_state = {}
-        general2_state = {}
-        if self.army1.general:
-            general1_state = {
-                "class": self.army1.general.__class__.__name__,
-                "state": self._serialize_general_state(self.army1.general)
-            }
-        if self.army2.general:
-            general2_state = {
-                "class": self.army2.general.__class__.__name__,
-                "state": self._serialize_general_state(self.army2.general)
-            }
-
-        return {
-            "tick": self.tick,
-            "max_tick": self.max_tick,
-            "map": {
-                "width": self.map.width if hasattr(self.map, 'width') else 100,
-                "height": self.map.height if hasattr(self.map, 'height') else 100,
-                "obstacles": [{"position": list(obs.position)} for obs in self.map.obstacles if
-                              hasattr(obs, 'position')]
-            },
-            "army1": self.army1.to_dict(),
-            "army2": self.army2.to_dict(),
-            "units": units_by_id,
-            "general1": general1_state,
-            "general2": general2_state
-        }
-
-    def _serialize_general_state(self, general):
-        """Serialize general's AI state (state of mind, planning, etc.)."""
-        state = {}
-        # Save GeneralClever specific state
-        if hasattr(general, '_is_deployed'):
-            state['_is_deployed'] = general._is_deployed
-        if hasattr(general, '_max_hp_cache'):
-            state['_max_hp_cache'] = general._max_hp_cache
-        if hasattr(general, '_deployment_threshold'):
-            state['_deployment_threshold'] = general._deployment_threshold
-        return state
-
-    @classmethod
-    def from_dict(cls, data):
-        """Reconstruct Battle from dictionary."""
-        battle = cls()
-        battle.tick = data.get("tick", 0)
-        battle.max_tick = data.get("max_tick", None)
-
-        # Reconstruct map
-        from backend.Class.Map import Map
-        map_data = data.get("map", {})
-        battle.map = Map(map_data.get("width", 100), map_data.get("height", 100))
-
-        # Reconstruct units
-        units_by_id = {}
-        units_data = data.get("units", {})
-        for unit_id, unit_data in units_data.items():
-            unit_type = unit_data["unit_type"]
-            position = tuple(unit_data["position"]) if unit_data.get("position") else None
-            army_name = unit_data.get("army", "army1")
-
-            if unit_type == "Knight":
-                unit = Knight(position)
-            elif unit_type == "Pikeman":
-                unit = Pikeman(position)
-            elif unit_type == "Crossbowman":
-                unit = Crossbowman(position)
-            else:
-                continue
-
-            # Restore unit ID (override the auto-generated one)
-            unit._Unit__id = unit_id
-
-            # Restore unit state
-            unit.hp = unit_data.get("hp", unit.hp)
-            unit.cooldown = unit_data.get("cooldown", 0)
-            units_by_id[unit_id] = unit
-
-        # Reconstruct armies
-        from backend.Class.Army import Army
-        army1_data = data.get("army1", {})
-        army2_data = data.get("army2", {})
-
-        battle.army1 = Army(army1_data.get("owner"))
-        battle.army2 = Army(army2_data.get("owner"))
-
-        for unit_id in army1_data.get("unit_ids", []):
-            if unit_id in units_by_id:
-                battle.army1.add_unit(units_by_id[unit_id])
-
-        for unit_id in army2_data.get("unit_ids", []):
-            if unit_id in units_by_id:
-                battle.army2.add_unit(units_by_id[unit_id])
-
-        # Reconstruct generals with AI state
-        general1_data = data.get("general1", {})
-        general2_data = data.get("general2", {})
-
-        if general1_data:
-            general1 = general_from_name(general1_data["class"])()
-            battle._restore_general_state(general1, general1_data.get("state", {}))
-            battle.army1.general = general1
-            general1.army = battle.army1
-
-        if general2_data:
-            general2 = general_from_name(general2_data["class"])()
-            battle._restore_general_state(general2, general2_data.get("state", {}))
-            battle.army2.general = general2
-            general2.army = battle.army2
-
-        # Link armies and map to battle
-        battle.army1.gameMode = battle
-        battle.army2.gameMode = battle
-        battle.map.gameMode = battle
-
-        return battle
-
-    def _restore_general_state(self, general, state):
-        """Restore general's AI state."""
-        if hasattr(general, '_is_deployed') and '_is_deployed' in state:
-            general._is_deployed = state['_is_deployed']
-        if hasattr(general, '_max_hp_cache') and '_max_hp_cache' in state:
-            general._max_hp_cache = state['_max_hp_cache']
-        if hasattr(general, '_deployment_threshold') and '_deployment_threshold' in state:
-            general._deployment_threshold = state['_deployment_threshold']
+    def to_dict(self): return {"tick": self.tick, "my_id": self.my_id}
