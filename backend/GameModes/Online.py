@@ -434,8 +434,7 @@ class Online(GameMode):
                     if self._apply_hp_report_to_army(self.my_army, unit_id, reported_hp):
                         self._bump_army_version(self.my_id)
                     for army_id, army in self.othersArmy.items():
-                        if self._apply_hp_report_to_army(army, unit_id, reported_hp):
-                            self._bump_army_version(army_id)
+                        self._apply_hp_report_to_army(army, unit_id, reported_hp)
 
             armies_payload = payload.get("armies", payload)
             if not isinstance(armies_payload, dict):
@@ -576,9 +575,6 @@ class Online(GameMode):
         for u in all_enemies.units:
             if u.hp < hp_before.get(u.id, u.hp):
                 damage_report[u.id] = u.hp  # HP after damage
-                owner_id = getattr(getattr(u, "army", None), "owner", None)
-                if owner_id:
-                    self._bump_army_version(owner_id)
         self._enemy_damage = damage_report
 
         # Incrémenter le tick

@@ -104,7 +104,7 @@ def json_to_army(data_army):
         if cls is None:
             continue
         unit = cls(
-            position=tuple(d["position"] if d["position"] else None),
+            position=tuple(d["position"]) if d["position"] else None,
         )
         # Restore the ID from network data
         if "id" in d:

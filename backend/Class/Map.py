@@ -21,4 +21,4 @@ class Map:
                     valid = False
                     break
             if valid :
-                self.obstacles.append(new_obstacle)
+                self.obstacles.add(new_obstacle)
