@@ -96,6 +96,11 @@ python main.py online --join 127.0.0.1 --general MajorDaft --army_file army/two.
 python main.py online --join 127.0.0.1 --general MajorDaft --army_file army/two.army --map_file map/superflat.map --pygame
 ```
 
+**Terminal 4 (Client 3)**
+```powershell
+python main.py online --join 127.0.0.1 --general MajorDaft --army_file army/two.army --map_file map/superflat.map --pygame
+```
+
 ---
 
 #### Comment tester via Internet (vraie IP / VPN) — `proxy_udp_real_ip` gcc -o network/proxy_udp_real_ip.exe network/proxy_udp_real_ip.c -lws2_32

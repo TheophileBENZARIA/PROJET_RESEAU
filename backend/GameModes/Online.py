@@ -1,18 +1,16 @@
 import ast
-import json
-import os
 import uuid
-from pathlib import Path
 import time
 
 from backend.Class.Army import Army
 from backend.GameModes.GameMode import GameMode
+from backend.Utils.Test_coherence import Test_coherence
 from backend.Utils.class_by_name import general_from_name
 from backend.Class.Units.Knight import Knight
 from backend.Class.Units.Pikeman import Pikeman
 from backend.Class.Units.Crossbowman import Crossbowman
 from backend.Utils.network_ownership import initialize_ownership, get_ownership_manager
-from backend.Utils.convert_json import json_to_army, army_to_json, army_to_dict, map_to_dict, json_to_map
+from backend.Utils.convert_json import json_to_army, army_to_dict, map_to_dict, json_to_map
 from network.network_api import NetworkBridge
 
 
@@ -47,6 +45,7 @@ class Online(GameMode):
         
         # Map to display the IP of each player in the UI
         self.peer_ips = {self.my_id: self.network_bridge._my_ip}
+        self.peer_slots = {self.my_id: self.spawn_slot}
         self.last_recv_time = {}
         
         # Initialize ownership system
@@ -58,6 +57,8 @@ class Online(GameMode):
         self._last_logged_map_signature = None
         # Damage dealt to remote units this tick (unit_id -> hp after attack)
         self._enemy_damage = {}
+
+        self.Test_coherence = Test_coherence()
 
     def _map_signature(self):
         if self.map is None:
@@ -222,6 +223,16 @@ class Online(GameMode):
                 if peer_id != self.my_id and peer_ip:
                     self.peer_ips[peer_id] = peer_ip
 
+            raw_peer_slots = payload.get("peer_slots", {})
+            peer_slots_payload = raw_peer_slots if isinstance(raw_peer_slots, dict) else {}
+            for peer_id, slot in peer_slots_payload.items():
+                if peer_id == self.my_id:
+                    continue
+                try:
+                    self.peer_slots[peer_id] = int(slot)
+                except (TypeError, ValueError):
+                    pass
+
             if msg_type == "OWNERSHIP_REQUEST":
                 unit_id = payload.get("unit_id")
                 requester_id = payload.get("requester_id")
@@ -259,7 +270,7 @@ class Online(GameMode):
 
             if "map" in payload and payload["map"]:
                 try:
-                    self.map = json_to_map(payload["map"])
+                    self.map.fussionner(json_to_map(payload["map"]))
                     self._deploy_my_army_for_current_map()
                     self._log_map_if_changed()
                 except Exception as e:
@@ -290,6 +301,11 @@ class Online(GameMode):
                         self.peer_ips[army_id] = peer_ips_payload[army_id]
                     elif sender_id == army_id and sender_ip:
                         self.peer_ips[army_id] = sender_ip
+                    if army_id in peer_slots_payload:
+                        try:
+                            self.peer_slots[army_id] = int(peer_slots_payload[army_id])
+                        except (TypeError, ValueError):
+                            pass
                     self.last_recv_time[army_id] = time.time()
                     try:
                         if army_id not in self.othersArmy:
@@ -502,7 +518,8 @@ class Online(GameMode):
             "armies": {
                 self.my_id: army_to_dict(self.my_army)
             },
-            "peer_ips": self.peer_ips
+            "peer_ips": self.peer_ips,
+            "peer_slots": self.peer_slots
         }
 
         # Include damage report so the remote peer knows its units took hits

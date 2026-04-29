@@ -104,24 +104,43 @@ class PyScreen(Affichage):
             (230, 230, 80),
         ]
 
+    def _label_for_slot(self, slot):
+        if isinstance(slot, int) and 0 <= slot < 26:
+            return f"Player {chr(ord('A') + slot)}"
+        return f"Player {slot}"
+
     def _style_for_owner(self, owner_id, fallback_index=None):
-        if owner_id == "army":
+        offline_styles = {
+            "army1": ("Army 1", 0),
+            "army2": ("Army 2", 1),
+            "army": (f"Army {fallback_index or 1}", (fallback_index or 1) - 1),
+        }
+        if owner_id in offline_styles:
+            label, color_index = offline_styles[owner_id]
             return {
-                "label": f"Army {fallback_index or 1}",
-                "color": self.color_palette[((fallback_index or 1) - 1) % len(self.color_palette)]
+                "label": label,
+                "color": self.color_palette[color_index % len(self.color_palette)]
             }
 
         if getattr(self, "player_styles", None) is None:
             self.player_styles = {}
 
+        peer_slots = getattr(getattr(self, "battle_instance", None), "peer_slots", {})
+        if owner_id in peer_slots:
+            try:
+                slot = int(peer_slots[owner_id])
+            except (TypeError, ValueError):
+                slot = fallback_index - 1 if fallback_index else 0
+            return {
+                "label": self._label_for_slot(slot),
+                "color": self.color_palette[slot % len(self.color_palette)]
+            }
+
         if owner_id not in self.player_styles:
-            import hashlib
-            hash_val = int(hashlib.md5(owner_id.encode('utf-8')).hexdigest(), 16)
-            index = hash_val % len(self.color_palette)
-            suffix = owner_id[:4]
+            index = (fallback_index - 1) if fallback_index else len(self.player_styles)
             self.player_styles[owner_id] = {
-                "label": f"player_{suffix}",
-                "color": self.color_palette[index]
+                "label": self._label_for_slot(index),
+                "color": self.color_palette[index % len(self.color_palette)]
             }
         return self.player_styles[owner_id]
 
@@ -558,20 +577,23 @@ class PyScreen(Affichage):
         line_height = 25
         current_y = panel_y
 
-        all_units = army1.living_units() + army2.living_units()
         groups = []
         seen_owners = set()
         local_owner = None
         if army1.living_units():
             local_owner = getattr(army1.living_units()[0], "network_owner_id", None)
 
-        for unit in all_units:
-            owner_id = getattr(unit, "network_owner_id", None) or "army"
+        unit_sources = (
+            [(unit, getattr(unit, "network_owner_id", None) or "army1") for unit in army1.living_units()]
+            + [(unit, getattr(unit, "network_owner_id", None) or "army2") for unit in army2.living_units()]
+        )
+
+        for unit, owner_id in unit_sources:
             if owner_id in seen_owners:
                 continue
             units = [
-                other for other in all_units
-                if (getattr(other, "network_owner_id", None) or "army") == owner_id
+                other for other, other_owner_id in unit_sources
+                if other_owner_id == owner_id
             ]
             if units:
                 seen_owners.add(owner_id)

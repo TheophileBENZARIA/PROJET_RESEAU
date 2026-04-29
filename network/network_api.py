@@ -241,7 +241,7 @@ class NetworkBridge:
                         if decrypted_payload:
                             msg["payload"] = decrypted_payload
                         else:
-                            print(f"[NetworkBridge] Security Error from {peer_id}: {error}")
+                            #print(f"[NetworkBridge] Security Error from {peer_id}: {error}")
                             continue
 
                 # ---- Filtre de réordonnancement ----
