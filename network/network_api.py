@@ -53,12 +53,16 @@ class NetworkBridge:
         try:
             import subprocess
             import os
+
+            program_name = "proxy_udp_real_ip"
+            if os.name == 'nt' :
+                program_name = "proxy_udp_real_ip.exe"
             
             # Paths relative to project root or current dir
-            proxy_path = os.path.join("network", "proxy_udp_real_ip.exe")
+            proxy_path = os.path.join("network", program_name)
             if not os.path.exists(proxy_path):
                 # Try local dir if not in network/
-                proxy_path = "proxy_udp_real_ip.exe"
+                proxy_path = program_name
 
             args = [proxy_path]
             if remote_ip:
