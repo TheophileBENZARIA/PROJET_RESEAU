@@ -153,6 +153,15 @@ class PyScreen(Affichage):
     def _label_for_owner(self, owner_id, fallback_index):
         return self._style_for_owner(owner_id, fallback_index)["label"]
 
+    def _slot_for_owner(self, owner_id, fallback_index=None):
+        peer_slots = getattr(getattr(self, "battle_instance", None), "peer_slots", {})
+        if owner_id in peer_slots:
+            try:
+                return int(peer_slots[owner_id])
+            except (TypeError, ValueError):
+                pass
+        return fallback_index if fallback_index is not None else 999
+
     def _get_interpolated_position(self, unit):
         """Obtenir la position interpolée pour une animation fluide."""
         if unit.position is None:
@@ -595,9 +604,17 @@ class PyScreen(Affichage):
                 other for other, other_owner_id in unit_sources
                 if other_owner_id == owner_id
             ]
-            if units:
-                seen_owners.add(owner_id)
-                groups.append((owner_id, units))
+            seen_owners.add(owner_id)
+            groups.append((owner_id, units))
+
+        peer_slots = getattr(getattr(self, "battle_instance", None), "peer_slots", {})
+        if isinstance(peer_slots, dict):
+            for owner_id in peer_slots:
+                if owner_id not in seen_owners:
+                    seen_owners.add(owner_id)
+                    groups.append((owner_id, []))
+
+        groups.sort(key=lambda item: self._slot_for_owner(item[0], len(groups)))
 
         panel_height = min(self.HEIGHT - 20, max(400, 80 + len(groups) * 95))
         panel_surface = pygame.Surface((panel_width, panel_height))
@@ -610,9 +627,9 @@ class PyScreen(Affichage):
         current_y += line_height + 5
 
         for index, (owner_id, units) in enumerate(groups, start=1):
-            color = self._color_for_unit(units[0], (255, 255, 255))
+            color = self._style_for_owner(owner_id, index)["color"]
             general_name = ""
-            if owner_id == local_owner and army1.general:
+            if units and owner_id == local_owner and army1.general:
                 general_name = f" ({type(army1.general).__name__})"
 
             ip_suffix = ""

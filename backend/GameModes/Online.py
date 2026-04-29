@@ -38,7 +38,7 @@ class Online(GameMode):
         self.remote_port = remote_port
         self.is_first = is_first # Host is Blue (P1), Joiner is Red (P2)
         if spawn_slot is None:
-            spawn_slot = 0 if is_first else max(1, lan_port - remote_port)
+            spawn_slot = 0 if is_first else 1
         self.spawn_slot = spawn_slot
         self.has_started = False
         self.current_sender_id = None
@@ -46,6 +46,7 @@ class Online(GameMode):
         # Map to display the IP of each player in the UI
         self.peer_ips = {self.my_id: self.network_bridge._my_ip}
         self.peer_slots = {self.my_id: self.spawn_slot}
+        self.slot_authority_id = self.my_id if self.is_first else None
         self.last_recv_time = {}
         
         # Initialize ownership system
@@ -57,8 +58,149 @@ class Online(GameMode):
         self._last_logged_map_signature = None
         # Damage dealt to remote units this tick (unit_id -> hp after attack)
         self._enemy_damage = {}
+        self._army_versions = {self.my_id: 0}
 
         self.Test_coherence = Test_coherence()
+
+    def _next_free_slot(self):
+        used_slots = set()
+        for slot in self.peer_slots.values():
+            try:
+                used_slots.add(int(slot))
+            except (TypeError, ValueError):
+                pass
+
+        slot = 0
+        while slot in used_slots:
+            slot += 1
+        return slot
+
+    def _ensure_peer_slot(self, peer_id):
+        if not peer_id or peer_id == "unknown":
+            return
+        if peer_id not in self.peer_slots:
+            self.peer_slots[peer_id] = self._next_free_slot()
+
+    def _apply_peer_slots(self, peer_slots_payload):
+        if not isinstance(peer_slots_payload, dict):
+            return
+
+        authority_id = None
+        for peer_id, slot in peer_slots_payload.items():
+            try:
+                if int(slot) == 0:
+                    authority_id = peer_id
+                    break
+            except (TypeError, ValueError):
+                continue
+
+        if self.is_first:
+            for peer_id in peer_slots_payload.keys():
+                if peer_id != self.my_id:
+                    self._ensure_peer_slot(peer_id)
+            return
+
+        if authority_id:
+            self.slot_authority_id = authority_id
+
+        if self.slot_authority_id and authority_id == self.slot_authority_id:
+            for peer_id, slot in peer_slots_payload.items():
+                try:
+                    self.peer_slots[peer_id] = int(slot)
+                except (TypeError, ValueError):
+                    pass
+            new_slot = self.peer_slots.get(self.my_id)
+            if new_slot is not None and int(new_slot) != self.spawn_slot:
+                self.spawn_slot = int(new_slot)
+                self._army_mirrored_for_width = None
+                self._deploy_my_army_for_current_map()
+            return
+
+        for peer_id, slot in peer_slots_payload.items():
+            if peer_id not in self.peer_slots:
+                try:
+                    self.peer_slots[peer_id] = int(slot)
+                except (TypeError, ValueError):
+                    pass
+
+    def _slot_zero_peer_id(self):
+        for peer_id, slot in self.peer_slots.items():
+            try:
+                if int(slot) == 0:
+                    return peer_id
+            except (TypeError, ValueError):
+                pass
+        return self.slot_authority_id
+
+    def _can_accept_army_snapshot(self, army_id, sender_id):
+        if army_id == self.my_id:
+            return False
+        if sender_id == army_id:
+            return True
+        host_id = self._slot_zero_peer_id()
+        if host_id and sender_id == host_id:
+            return True
+        return False
+
+    def _incoming_army_version(self, army_id, army_versions_payload, msg):
+        version = None
+        if isinstance(army_versions_payload, dict):
+            version = army_versions_payload.get(army_id)
+        if version is None:
+            version = msg.get("seq", 0)
+        try:
+            return int(version)
+        except (TypeError, ValueError):
+            return 0
+
+    def _is_stale_army_snapshot(self, army_id, incoming_version):
+        return incoming_version < self._army_versions.get(army_id, -1)
+
+    def _remember_army_version(self, army_id, incoming_version):
+        self._army_versions[army_id] = max(
+            incoming_version,
+            self._army_versions.get(army_id, -1)
+        )
+
+    def _bump_army_version(self, army_id):
+        if not army_id:
+            return
+        self._army_versions[army_id] = max(
+            self._army_versions.get(army_id, -1) + 1,
+            self.tick
+        )
+
+    def _apply_hp_report_to_army(self, army, unit_id, reported_hp):
+        if army is None:
+            return False
+        unit = army.get_unit_by_id(unit_id)
+        if unit is None:
+            return False
+        changed = False
+        if reported_hp < unit.hp:
+            unit.hp = reported_hp
+            changed = True
+        if unit.hp < 0:
+            unit.hp = 0
+            changed = True
+        return changed
+
+    def _apply_hp_reductions_from_army_data(self, army_data):
+        if not self.my_army or not isinstance(army_data, dict):
+            return False
+        changed = False
+        local_units = {u.id: u for u in self.my_army.units}
+        for unit_data in army_data.get("units", []):
+            unit_id = unit_data.get("id")
+            if unit_id in local_units:
+                reported_hp = unit_data.get("hp", local_units[unit_id].hp)
+                if reported_hp < local_units[unit_id].hp:
+                    local_units[unit_id].hp = reported_hp
+                    changed = True
+                if local_units[unit_id].hp < 0:
+                    local_units[unit_id].hp = 0
+                    changed = True
+        return changed
 
     def _map_signature(self):
         if self.map is None:
@@ -77,7 +219,9 @@ class Online(GameMode):
     def _mark_army_owner(self, army, army_id):
         if army is None:
             return
+        army.owner = army_id
         for unit in army.units:
+            unit.army = army
             unit.network_owner_id = army_id
 
     def _remember_base_positions(self):
@@ -176,6 +320,8 @@ class Online(GameMode):
             if sender_id and sender_id != self.my_id and sender_id != "unknown":
                 if sender_ip:
                     self.peer_ips[sender_id] = sender_ip
+                if self.is_first:
+                    self._ensure_peer_slot(sender_id)
                 if security and sender_id not in security.peer_session_keys:
                     last_hello = self.pending_handshakes.get(sender_id, 0)
                     if time.time() - last_hello > 2.0:
@@ -225,13 +371,7 @@ class Online(GameMode):
 
             raw_peer_slots = payload.get("peer_slots", {})
             peer_slots_payload = raw_peer_slots if isinstance(raw_peer_slots, dict) else {}
-            for peer_id, slot in peer_slots_payload.items():
-                if peer_id == self.my_id:
-                    continue
-                try:
-                    self.peer_slots[peer_id] = int(slot)
-                except (TypeError, ValueError):
-                    pass
+            self._apply_peer_slots(peer_slots_payload)
 
             if msg_type == "OWNERSHIP_REQUEST":
                 unit_id = payload.get("unit_id")
@@ -278,34 +418,42 @@ class Online(GameMode):
 
             # Apply damage the remote peer computed against our units
             enemy_damage = payload.get("enemy_damage", {})
-            if enemy_damage and self.my_army:
-                my_units_by_id = {u.id: u for u in self.my_army.units}
+            if enemy_damage:
                 for unit_id, reported_hp in enemy_damage.items():
-                    if unit_id in my_units_by_id:
-                        u = my_units_by_id[unit_id]
-                        # Only reduce HP, never increase (prevents revival from stale packets)
-                        if reported_hp < u.hp:
-                            u.hp = reported_hp
-                        if u.hp < 0:
-                            u.hp = 0
+                    if self._apply_hp_report_to_army(self.my_army, unit_id, reported_hp):
+                        self._bump_army_version(self.my_id)
+                    for army_id, army in self.othersArmy.items():
+                        if self._apply_hp_report_to_army(army, unit_id, reported_hp):
+                            self._bump_army_version(army_id)
 
             armies_payload = payload.get("armies", payload)
             if not isinstance(armies_payload, dict):
                 continue
+            raw_army_versions = payload.get("army_versions", {})
+            army_versions_payload = raw_army_versions if isinstance(raw_army_versions, dict) else {}
 
 
             for army_id, army_data in armies_payload.items():
+                if army_id == self.my_id:
+                    if sender_id == self._slot_zero_peer_id():
+                        if self._apply_hp_reductions_from_army_data(army_data):
+                            self._bump_army_version(self.my_id)
+                    continue
+                if not self._can_accept_army_snapshot(army_id, sender_id):
+                    continue
+
+                incoming_version = self._incoming_army_version(army_id, army_versions_payload, msg)
+                if self._is_stale_army_snapshot(army_id, incoming_version):
+                    continue
+
                 if army_id != self.my_id:
                     ownership.register_peer(army_id)
+                    if self.is_first:
+                        self._ensure_peer_slot(army_id)
                     if army_id in peer_ips_payload:
                         self.peer_ips[army_id] = peer_ips_payload[army_id]
                     elif sender_id == army_id and sender_ip:
                         self.peer_ips[army_id] = sender_ip
-                    if army_id in peer_slots_payload:
-                        try:
-                            self.peer_slots[army_id] = int(peer_slots_payload[army_id])
-                        except (TypeError, ValueError):
-                            pass
                     self.last_recv_time[army_id] = time.time()
                     try:
                         if army_id not in self.othersArmy:
@@ -368,18 +516,9 @@ class Online(GameMode):
                             for uid, u in existing_by_id.items():
                                 if uid not in incoming_ids:
                                     u.hp = 0
+                        self._remember_army_version(army_id, incoming_version)
                     except Exception as e:
                         print(f"[Online] Erreur lors du merge de l'armee de {army_id} : {e}")
-
-                else:
-                    try:
-                        remote_view_of_me = json_to_army(army_data)
-                        local_units = {u.id: u for u in self.my_army.units}
-                        for unit in remote_view_of_me.units:
-                            if unit.id in local_units:
-                                local_units[unit.id].hp = min(local_units[unit.id].hp, unit.hp)
-                    except Exception as e:
-                        print(f"[Online] Erreur lors du merge des degats pour mon armee : {e}")
         
         known_remote_armies = len(self.othersArmy)
         if known_remote_armies != self._last_known_remote_armies:
@@ -421,6 +560,9 @@ class Online(GameMode):
         for u in all_enemies.units:
             if u.hp < hp_before.get(u.id, u.hp):
                 damage_report[u.id] = u.hp  # HP after damage
+                owner_id = getattr(getattr(u, "army", None), "owner", None)
+                if owner_id:
+                    self._bump_army_version(owner_id)
         self._enemy_damage = damage_report
 
         # Incrémenter le tick
@@ -471,6 +613,7 @@ class Online(GameMode):
     def launch(self):
         if self.my_army:
             self.my_army.gameMode = self
+            self._mark_army_owner(self.my_army, self.my_id)
         self._remember_base_positions()
         self._deploy_my_army_for_current_map()
         self._log_map_if_changed()
@@ -487,8 +630,9 @@ class Online(GameMode):
                 try:
                     self.message_receive()
                     self._broadcast_state()
-                except Exception:
-                    pass
+                except Exception as e:
+                    if getattr(self, "verbose", False):
+                        print(f"[Online] Erreur boucle reseau : {e}")
                 time.sleep(0.02) # 50 updates/second
         
         self._network_thread = threading.Thread(target=network_loop, daemon=True)
@@ -511,12 +655,33 @@ class Online(GameMode):
                 self.othersArmy[k] = json_to_army(army[k])
 
     def create_payload(self):
+        if self.my_army:
+            self._mark_army_owner(self.my_army, self.my_id)
+        self._army_versions[self.my_id] = max(
+            self._army_versions.get(self.my_id, 0),
+            self.tick
+        )
+
         # Each peer is authoritative for its OWN army ONLY for positions.
         # We also include "enemy_damage": HP values we computed for enemy units
         # so the remote peer can apply damage to its own units.
+        armies = {
+            self.my_id: army_to_dict(self.my_army)
+        }
+
+        # The host acts as the rendezvous point in 3+ player games.
+        # It relays every known army so B can discover C and C can discover B.
+        if self.is_first:
+            for army_id, army in self.othersArmy.items():
+                if army_id != self.my_id:
+                    self._mark_army_owner(army, army_id)
+                    armies[army_id] = army_to_dict(army)
+
         payload = {
-            "armies": {
-                self.my_id: army_to_dict(self.my_army)
+            "armies": armies,
+            "army_versions": {
+                army_id: self._army_versions.get(army_id, 0)
+                for army_id in armies
             },
             "peer_ips": self.peer_ips,
             "peer_slots": self.peer_slots
