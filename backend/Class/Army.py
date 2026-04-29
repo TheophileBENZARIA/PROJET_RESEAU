@@ -244,6 +244,14 @@ class Army:
             #Monk convert
             elif action.kind == "conversion":
                 if target in otherArmy.living_units() :
+                    # Request network ownership transfer before we take it locally
+                    if hasattr(self.gameMode, "request_unit_ownership"):
+                        self.gameMode.request_unit_ownership(target.id)
+                    
+                    # Locally assign ownership immediately to avoid REJECTED errors
+                    if ownership and hasattr(self.gameMode, "my_id"):
+                        ownership.assign_ownership(target.id, self.gameMode.my_id)
+                        
                     otherArmy.remove_unit(target)
                     self.add_unit(target)
                     unit.cooldown = unit.reload_time

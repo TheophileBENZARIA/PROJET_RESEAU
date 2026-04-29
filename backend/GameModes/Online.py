@@ -230,6 +230,13 @@ class Online(GameMode):
                     # Automatically grant ownership if we are the current owner (for demonstration)
                     if ownership.grant_ownership(unit_id, requester_id):
                         print(f"[Ownership] Accord de la propriete de {unit_id} a {requester_id}")
+                        
+                        # IMPORTANT: If we granted ownership, we must remove it from our army locally!
+                        if self.my_army:
+                            u = self.my_army.get_unit_by_id(unit_id)
+                            if u:
+                                self.my_army.remove_unit(u)
+                                
                         for ip in self.know_ip:
                             self.network_bridge.send_message("OWNERSHIP_GRANT", ip, {
                                 "unit_id": unit_id,
@@ -242,6 +249,12 @@ class Online(GameMode):
                 if unit_id and new_owner_id:
                     print(f"[Ownership] Transfert de {unit_id} vers {new_owner_id} confirme")
                     ownership.handle_grant(unit_id, new_owner_id)
+                    
+                    # If someone else gained ownership, make sure we don't accidentally keep it
+                    if new_owner_id != self.my_id and self.my_army:
+                        u = self.my_army.get_unit_by_id(unit_id)
+                        if u:
+                            self.my_army.remove_unit(u)
                 continue
 
             if "map" in payload and payload["map"]:
@@ -272,7 +285,6 @@ class Online(GameMode):
 
             for army_id, army_data in armies_payload.items():
                 if army_id != self.my_id:
-                    self.current_sender_id = army_id
                     ownership.register_peer(army_id)
                     if army_id in peer_ips_payload:
                         self.peer_ips[army_id] = peer_ips_payload[army_id]

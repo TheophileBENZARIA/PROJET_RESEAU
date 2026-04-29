@@ -162,8 +162,8 @@ class PyScreen(Affichage):
             elapsed = time.time() - self.animation_start_time[unit_id]
             if elapsed < self.animation_duration:
                 start_pos = self.unit_animation_start_pos[unit_id]
-                t = elapsed / self.animation_duration
-                t = t * t * (3.0 - 2.0 * t)  # Smoothstep
+                t = min(1.0, elapsed / self.animation_duration)
+                # Utiliser une interpolation linéaire pour simuler la marche plutôt qu'un 'téléport' glissant
                 interp_x = start_pos[0] + (current_pos[0] - start_pos[0]) * t
                 interp_y = start_pos[1] + (current_pos[1] - start_pos[1]) * t
                 return (interp_x, interp_y)
