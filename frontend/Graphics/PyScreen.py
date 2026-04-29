@@ -1,5 +1,6 @@
 import sys
 import time
+import zlib
 from time import sleep
 
 import pygame
@@ -105,11 +106,15 @@ class PyScreen(Affichage):
         ]
 
     def _label_for_slot(self, slot):
-        if isinstance(slot, int) and 0 <= slot < 26:
-            return f"Player {chr(ord('A') + slot)}"
+        if isinstance(slot, int):
+            if 0 <= slot < 26:
+                return f"Player {chr(ord('A') + slot)}"
+            if slot < 0:
+                return "Joining..."
         return f"Player {slot}"
 
     def _style_for_owner(self, owner_id, fallback_index=None):
+        # 1. Handle special/fixed offline styles (Army 1 = Blue, Army 2 = Red)
         offline_styles = {
             "army1": ("Army 1", 0),
             "army2": ("Army 2", 1),
@@ -125,24 +130,46 @@ class PyScreen(Affichage):
         if getattr(self, "player_styles", None) is None:
             self.player_styles = {}
 
+        # If already assigned this session, check if we need to update the label based on current peer_slots
+        if owner_id in self.player_styles:
+            style = self.player_styles[owner_id]
+            peer_slots = getattr(getattr(self, "battle_instance", None), "peer_slots", {})
+            if owner_id in peer_slots:
+                try:
+                    slot = int(peer_slots[owner_id])
+                    new_label = self._label_for_slot(slot)
+                    # Update label if it changed (e.g. from "Joining..." to "Player C")
+                    if style["label"] != new_label:
+                        style["label"] = new_label
+                except (TypeError, ValueError):
+                    pass
+            return style
+
+        # 2. Use stable hash for persistent colors based on owner_id (UID)
+        # This ensures the same player (UID) always gets the same color from the palette.
+        uid_str = str(owner_id)
+        uid_hash = zlib.adler32(uid_str.encode('utf-8'))
+        color_index = uid_hash % len(self.color_palette)
+
+        # 3. Handle Label - we still try to use the peer_slots if available
         peer_slots = getattr(getattr(self, "battle_instance", None), "peer_slots", {})
         if owner_id in peer_slots:
             try:
                 slot = int(peer_slots[owner_id])
+                label = self._label_for_slot(slot)
             except (TypeError, ValueError):
-                slot = fallback_index - 1 if fallback_index else 0
-            return {
-                "label": self._label_for_slot(slot),
-                "color": self.color_palette[slot % len(self.color_palette)]
-            }
-
-        if owner_id not in self.player_styles:
+                label = self._label_for_slot(color_index)
+        else:
+            # Fallback to order of discovery in the UI
             index = (fallback_index - 1) if fallback_index else len(self.player_styles)
-            self.player_styles[owner_id] = {
-                "label": self._label_for_slot(index),
-                "color": self.color_palette[index % len(self.color_palette)]
-            }
-        return self.player_styles[owner_id]
+            label = self._label_for_slot(index)
+            
+        style = {
+            "label": label,
+            "color": self.color_palette[color_index]
+        }
+        self.player_styles[owner_id] = style
+        return style
 
     def _color_for_unit(self, unit, fallback_color):
         owner_id = getattr(unit, "network_owner_id", None)

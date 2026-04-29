@@ -1,6 +1,7 @@
 import ast
 import uuid
 import time
+import socket
 
 from backend.Class.Army import Army
 from backend.GameModes.GameMode import GameMode
@@ -31,14 +32,19 @@ class Online(GameMode):
         self.network_bridge = NetworkBridge(port=py_port)
         self.know_ip= set()
         self.pending_handshakes = {}
-        self.my_id = str(uuid.uuid4())
+        # Stable UID based on machine and port to allow persistent identification and coloring
+        # while still supporting multiple instances on the same machine.
+        seed = f"medievail-{socket.gethostname()}-{uuid.getnode()}-{py_port}"
+        self.my_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, seed))
         self.network_bridge.my_id = self.my_id
 
         self.lan_port = lan_port
         self.remote_port = remote_port
         self.is_first = is_first # Host is Blue (P1), Joiner is Red (P2)
         if spawn_slot is None:
-            spawn_slot = 0 if is_first else 1
+            # Joiners start with -1 to avoid colliding on "Player B" (slot 1)
+            # until the host assigns a definitive slot.
+            spawn_slot = 0 if is_first else -1
         self.spawn_slot = spawn_slot
         self.has_started = False
         self.current_sender_id = None
@@ -242,7 +248,15 @@ class Online(GameMode):
         if width is None or height is None or self._army_mirrored_for_width == width:
             return
         print(f"[Online] Deploying army slot {self.spawn_slot} on map {width}x{height}...")
-        y_offset = 0 if self.spawn_slot == 0 else self.spawn_slot * 20
+        
+        # Determine y_offset: slot 0 is at 0, slot 1 at 20, slot 2 at 40...
+        # If pending (-1), we use a temporary offset far from the host
+        y_offset = 0
+        if self.spawn_slot > 0:
+            y_offset = self.spawn_slot * 20
+        elif self.spawn_slot < 0:
+            y_offset = 40 # Temporary offset for joining players
+            
         for unit in self.my_army.units:
             base_pos = self._army_base_positions.get(unit.id, unit.position)
             if base_pos:
