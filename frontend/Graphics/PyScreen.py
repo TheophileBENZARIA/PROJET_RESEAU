@@ -35,14 +35,14 @@ class PyScreen(Affichage):
         self.tile_size = 10  # Taille de base d'une tuile
 
         # Charger les images (tuiles et unités)
-        self.TILE_IMAGE = pygame.image.load(self.path + "tile.bmp").convert_alpha()
-        self.KNIGHT_IMAGE = pygame.image.load(self.path + "knight.bmp").convert_alpha()
-        self.PIKEMAN_IMAGE = pygame.image.load(self.path + "pikeman.bmp").convert_alpha()
-        self.CROSSBOWMAN_IMAGE = pygame.image.load(self.path + "crossbowman.bmp").convert_alpha()
-        self.ROCHER_IMAGE = pygame.image.load(self.path + "rocher.png")
-        self.CASTLE_IMAGE = pygame.image.load(self.path + "castle.png")
-        self.ELEPHANT_IMAGE = pygame.image.load(self.path + "elephant.png")
-        self.MONK_IMAGE = pygame.image.load(self.path + "monk.png")
+        self.TILE_IMAGE = pygame.image.load(os.path.join(self.path, "tile.bmp")).convert_alpha()
+        self.KNIGHT_IMAGE = pygame.image.load(os.path.join(self.path, "knight.bmp")).convert_alpha()
+        self.PIKEMAN_IMAGE = pygame.image.load(os.path.join(self.path, "pikeman.bmp")).convert_alpha()
+        self.CROSSBOWMAN_IMAGE = pygame.image.load(os.path.join(self.path, "crossbowman.bmp")).convert_alpha()
+        self.ROCHER_IMAGE = pygame.image.load(os.path.join(self.path, "rocher.png"))
+        self.CASTLE_IMAGE = pygame.image.load(os.path.join(self.path, "castle.png"))
+        self.ELEPHANT_IMAGE = pygame.image.load(os.path.join(self.path, "elephant.png"))
+        self.MONK_IMAGE = pygame.image.load(os.path.join(self.path, "monk.png"))
 
         # Variables pour les animations fluides
         self.unit_previous_positions = {}

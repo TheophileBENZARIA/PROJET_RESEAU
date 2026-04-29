@@ -95,7 +95,7 @@ class NetworkBridge:
             if os.name == "nt":
                 program_extension = ".exe"
 
-            # Prefer proxy_udp_real_ip.exe for multi-device testing if available
+            # Prefer proxy_udp_real_ip for multi-device testing if available
             proxy_real_ip = os.path.join("network", "proxy_udp_real_ip" + program_extension)
             proxy_standard = os.path.join("network", "proxy_udp" + program_extension)
 
@@ -104,8 +104,8 @@ class NetworkBridge:
             elif os.path.exists(proxy_standard):
                 proxy_path = proxy_standard
             else:
-                # Fallback to local dir
-                proxy_path = "proxy_udp" + program_extension
+                # Fallback to local dir or PATH
+                proxy_path = "proxy_udp_real_ip" if os.name != "nt" else "proxy_udp_real_ip.exe"
 
             args = [proxy_path]
             if remote_ip:
@@ -119,7 +119,13 @@ class NetworkBridge:
             args.append(str(remote_port))  # remote_dest_port
 
             print(f"[NetworkBridge] Starting Proxy C: {args}")
-            self.proxy_process = subprocess.Popen(args, creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0)
+            
+            popen_kwargs = {}
+            if os.name == 'nt':
+                import subprocess
+                popen_kwargs['creationflags'] = subprocess.CREATE_NEW_CONSOLE
+            
+            self.proxy_process = subprocess.Popen(args, **popen_kwargs)
         except Exception as e:
             print(f"[NetworkBridge] Warning: Could not start Proxy C automatically: {e}")
 
