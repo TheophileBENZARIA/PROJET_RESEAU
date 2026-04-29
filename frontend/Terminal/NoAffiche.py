@@ -12,5 +12,5 @@ class NoAffiche(Affichage):
     def initialiser(self):
         pass
 
-    def afficher(self, map: Map, army1: Army, army2: Army):
+    def afficher(self, map: Map, *armies):
         return None

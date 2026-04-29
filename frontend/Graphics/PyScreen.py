@@ -1,7 +1,7 @@
 import sys
 import time
 from time import sleep
-
+import random
 import pygame
 
 from backend.Class.Army import Army
@@ -60,6 +60,12 @@ class PyScreen(Affichage):
         self.show_army2_details = True
         self.show_unit_counts = True
 
+        #Ajouter une structure de rangement par couleur pour les équipes
+        self.army_colors = {
+            0: (50, 100, 255), #L'équipe 1 est désormais désignée comme bleue.
+            1: (255, 50, 50)   # L'équipe 2 est fixée comme étant rouge.
+        }
+        self.show_army_details_dict = {}
         # Contrôle de la vitesse et de la pause
         self.battle_speed_multiplier = 1.0
         self.is_paused_state = False
@@ -93,6 +99,16 @@ class PyScreen(Affichage):
         self.camera_centered = False
         self.current_map_bounds = (0, 0, 0, 0) # (x_max, x_min, y_max, y_min)
 
+    def _get_army_color(self, army_index):
+        """Récupérer la couleur de l'équipe, en générer automatiquement une aléatoire si elle n'est pas déjà présente."""
+        if army_index not in self.army_colors:
+            # Générer des couleurs aléatoires
+            r = random.randint(50, 255)
+            g = random.randint(50, 255)
+            b = random.randint(50, 255)
+            self.army_colors[army_index] = (r, g, b)
+        return self.army_colors[army_index]
+    
     def _get_interpolated_position(self, unit):
         """Obtenir la position interpolée pour une animation fluide."""
         if unit.position is None:
@@ -191,74 +207,88 @@ class PyScreen(Affichage):
             pygame.draw.circle(self.screen, army_color, (int(iso_x), int(iso_y)), border_radius, 2)
             self._draw_hp_bar(unit, iso_x, iso_y, unit_size)
 
-    def afficher(self, map: Map, army1: Army, army2: Army):
-        # Mettre à jour les limites actuelles pour la minimap et le centrage
-        self.current_map_bounds = Affichage.get_sizeMap(map, army1, army2)
+    def afficher(self, map: Map, *armies):
+        """
+        Affiche la carte, les unités de toutes les armées et l'interface utilisateur.
+        Prend en charge un nombre dynamique d'armées.
+        """
+        # Mettre à jour les limites actuelles de la carte pour la minimap et le centrage.
+        # Note : Assurez-vous que la méthode get_sizeMap de la classe mère (Affichage) 
+        # accepte également *armies au lieu de (army1, army2)
+        self.current_map_bounds = Affichage.get_sizeMap(map, *armies)
 
-        # Centrer la caméra une seule fois au début
+        # Centrer la caméra une seule fois au début du jeu
         if not self.camera_centered:
             x_max, x_min, y_max, y_min = self.current_map_bounds
             center_x = (x_max + x_min) / 2
             center_y = (y_max + y_min) / 2
             scaled_tile_size = self.tile_size * self.zoom_factor
 
-            # Calcul de l'offset pour mettre le centre au milieu de l'écran
+            # Calcul de l'offset pour placer le centre de la carte au milieu de l'écran
             self.offset_x = -((center_x - center_y) * scaled_tile_size / 2)
             self.offset_y = -((center_x + center_y) * scaled_tile_size / 4) + self.HEIGHT / 4
             self.camera_centered = True
 
+        # Gestion des entrées clavier et souris
         input_result = self.handle_input()
         if input_result == "QUIT":
             return "QUIT"
         elif input_result == "LOAD":
             return "LOAD"
 
+        # Effacer l'écran (remplir avec la couleur noire)
         self.screen.fill((0, 0, 0))
         x_max, x_min, y_max, y_min = self.current_map_bounds
 
+        # Calculer la taille réelle des tuiles en fonction du niveau de zoom actuel
         actual_tile_size = int(self.tile_size * self.zoom_factor)
         tile_overlap = 4
 
-        # On met à jour les tuiles avec le niveau de zoom actuel
+        # Préparation et redimensionnement des tuiles de base (claires et sombres)
         base_tile = pygame.transform.scale(self.TILE_IMAGE, (actual_tile_size + tile_overlap, actual_tile_size + tile_overlap))
         self.TILE_LIGHT = base_tile.copy()
         self.TILE_LIGHT.fill((60, 180, 40), special_flags=pygame.BLEND_RGB_MULT)
         self.TILE_DARK = base_tile.copy()
         self.TILE_DARK.fill((45, 150, 30), special_flags=pygame.BLEND_RGB_MULT)
 
-        # Dessiner la carte (Tuiles)
+        # Dessiner la carte (les tuiles isométriques)
         for x in range(int(x_min) - 1, int(x_max) + 1):
             for y in range(int(y_min) - 1, int(y_max) + 1):
                 iso_x, iso_y = self.convert_to_iso((x, y))
+                # Alterner les couleurs des tuiles pour créer un effet d'échiquier
                 current_tile = self.TILE_LIGHT if (x + y) % 2 == 0 else self.TILE_DARK
                 rect = current_tile.get_rect(center=(int(iso_x), int(iso_y)))
                 self.screen.blit(current_tile, rect.topleft)
 
-        # Dessiner les unités de l'armée 1
-        for unit in army1.living_units():
-            self._draw_unit(unit, (50, 100, 255))
+        # Parcourir et dessiner les unités de TOUTES les armées
+        for index, army in enumerate(armies):
+            # Récupérer la couleur spécifique à cette armée (générée dynamiquement)
+            army_color = self._get_army_color(index)
+            for unit in army.living_units():
+                self._draw_unit(unit, army_color)
 
-        # Dessiner les unités de l'armée 2
-        for unit in army2.living_units():
-            self._draw_unit(unit, (255, 50, 50))
-
-        # Dessiner les obstacles
+        # Dessiner les obstacles (comme les rochers)
         for unit in map.obstacles:
             self._draw_unit(unit, None)
 
-        # Afficher l'UI
+        # Affichage de l'interface utilisateur (UI)
         if self.show_minimap:
-            self._draw_minimap(map, army1, army2)
+            # Passer toutes les armées à la fonction de la minimap
+            self._draw_minimap(map, *armies)
 
         if self.show_army_stats:
-            self._draw_army_stats(army1, army2)
+            # Passer toutes les armées au panneau des statistiques
+            self._draw_army_stats(*armies)
 
         if self.is_paused_state:
+            # Afficher l'indicateur de pause
             self._draw_pause_indicator()
 
         if self.show_load_menu:
+            # Afficher le menu de chargement des sauvegardes
             self._draw_load_menu()
 
+        # Rafraîchir l'écran complet
         pygame.display.flip()
 
     def is_paused(self):
@@ -445,12 +475,18 @@ class PyScreen(Affichage):
         iso_y = ((x + y) * scaled_tile_size // 4 + self.HEIGHT // 4 + self.offset_y)
         return (iso_x, iso_y)
 
-    def _draw_minimap(self, map: Map, army1: Army, army2: Army):
-        """Dessiner la minimap en perspective Isométrique (2.5D)."""
+    def _draw_minimap(self, map: Map, *armies):
+        """
+        Dessine la minimap en perspective Isométrique (2.5D).
+        Affiche le terrain et la position des unités pour toutes les armées.
+        """
         minimap_x, minimap_y = self.minimap_position
+        
+        # Création de la surface de la minimap avec prise en charge de la transparence (SRCALPHA)
         minimap_surface = pygame.Surface((self.minimap_size, self.minimap_size), pygame.SRCALPHA)
-        minimap_surface.fill((40, 40, 40, 200))  # Fond sombre transparent
+        minimap_surface.fill((40, 40, 40, 200))  # Fond sombre semi-transparent
 
+        # Récupération des limites de la carte
         x_max, x_min, y_max, y_min = self.current_map_bounds
         map_width = max(x_max - x_min + 1, 1)
         map_height = max(y_max - y_min + 1, 1)
@@ -458,10 +494,11 @@ class PyScreen(Affichage):
         center_x = self.minimap_size / 2
         center_y = self.minimap_size / 2
 
-        # Calculer l'échelle pour rentrer le losange dans la minimap
+        # Calculer l'échelle pour faire rentrer le losange (la carte) dans la minimap
         scale = (self.minimap_size * 0.8) / (map_width + map_height)
 
         def get_mini_iso(x, y):
+            """Convertit les coordonnées cartésiennes en coordonnées isométriques pour la minimap."""
             rel_x = x - x_min
             rel_y = y - y_min
             # Projection isométrique adaptée pour la petite surface
@@ -469,109 +506,120 @@ class PyScreen(Affichage):
             iso_y = center_y + (rel_x + rel_y) * (scale / 2) - ((map_width + map_height) * (scale / 4))
             return iso_x, iso_y
 
-        # Dessiner le fond (Losange représentant le sol)
+        # 1. Dessiner le fond (Losange représentant le sol de la carte)
         pts = [
             get_mini_iso(x_min, y_min),
             get_mini_iso(x_max, y_min),
             get_mini_iso(x_max, y_max),
             get_mini_iso(x_min, y_max)
         ]
-        pygame.draw.polygon(minimap_surface, (50, 120, 50), pts)
-        pygame.draw.polygon(minimap_surface, (100, 200, 100), pts, 1) # Bordure du losange
+        pygame.draw.polygon(minimap_surface, (50, 120, 50), pts)      # Remplissage vert
+        pygame.draw.polygon(minimap_surface, (100, 200, 100), pts, 1) # Bordure claire du losange
 
-        # Dessiner les unités de l'armée 1
-        for unit in army1.living_units():
-            if unit.position is not None:
-                mx, my = get_mini_iso(*unit.position)
-                pygame.draw.circle(minimap_surface, (50, 100, 255), (int(mx), int(my)), 2)
+        # 2. Parcourir et dessiner les unités de TOUTES les armées
+        for index, army in enumerate(armies):
+            # Récupérer la couleur assignée à cette armée
+            army_color = self._get_army_color(index)
+            
+            for unit in army.living_units():
+                if unit.position is not None:
+                    mx, my = get_mini_iso(*unit.position)
+                    # Dessiner un petit point (cercle) coloré pour chaque unité
+                    pygame.draw.circle(minimap_surface, army_color, (int(mx), int(my)), 2)
 
-        # Dessiner les unités de l'armée 2
-        for unit in army2.living_units():
-            if unit.position is not None:
-                mx, my = get_mini_iso(*unit.position)
-                pygame.draw.circle(minimap_surface, (255, 50, 50), (int(mx), int(my)), 2)
-
-        # Dessiner le cadre extérieur global de la minimap
+        # 3. Dessiner le cadre extérieur global de la minimap
         pygame.draw.rect(minimap_surface, (255, 255, 255), (0, 0, self.minimap_size, self.minimap_size), 2)
 
-        # Afficher la minimap
+        # 4. Afficher la surface de la minimap sur l'écran principal
         self.screen.blit(minimap_surface, (minimap_x, minimap_y))
 
-        # Afficher le texte "Minimap"
+        # 5. Afficher le texte "Minimap Iso (M)" au-dessus de la minimap
         label = self.small_font.render("Minimap Iso (M)", True, (255, 255, 255))
         self.screen.blit(label, (minimap_x, minimap_y - 20))
 
-    def _draw_army_stats(self, army1: Army, army2: Army):
-        # [Logique inchangée pour les statistiques]
+    def _draw_army_stats(self, *armies):
+        """
+        Affiche les statistiques pour un nombre dynamique d'armées.
+        Calcule dynamiquement la hauteur du panneau et compte les unités par type.
+        """
         panel_x = 10
         panel_y = 10
         panel_width = 300
         line_height = 25
-        current_y = panel_y
 
-        panel_surface = pygame.Surface((panel_width, 400))
-        panel_surface.set_alpha(200)
-        panel_surface.fill((20, 20, 20))
+        # 1. Calculer dynamiquement la hauteur requise pour le panneau
+        # Hauteur de base : Titre + Espace + Texte d'aide (environ 14 lignes)
+        estimated_height = 40 + (14 * 20) 
+        for index, army in enumerate(armies):
+            # Assurez-vous que le dictionnaire existe
+            if not hasattr(self, 'show_army_details_dict'):
+                self.show_army_details_dict = {}
+                
+            if self.show_army_details_dict.get(index, True):
+                # En-tête + types d'unités (estimé max 6 types) + ligne de séparation
+                estimated_height += line_height + (6 * 20) + line_height
+            else:
+                # Texte masqué + ligne de séparation
+                estimated_height += line_height * 2
+
+        # Dessiner le panneau d'arrière-plan avec la hauteur calculée
+        panel_surface = pygame.Surface((panel_width, estimated_height), pygame.SRCALPHA)
+        panel_surface.fill((20, 20, 20, 200)) # Noir avec transparence (Alpha=200)
         self.screen.blit(panel_surface, (panel_x, panel_y))
 
-        title = self.font.render("Army Statistics (F1-F4)", True, (255, 255, 255))
-        self.screen.blit(title, (panel_x + 5, current_y))
+        current_y = panel_y + 5
+
+        # Afficher le titre
+        title = self.font.render("Army Statistics", True, (255, 255, 255))
+        self.screen.blit(title, (panel_x + 10, current_y))
         current_y += line_height + 5
 
-        if self.show_army1_details:
-            army1_units = army1.living_units()
-            army1_count = len(army1_units)
-            header1 = self.font.render(f"Army 1 ({type(army1.general).__name__}): {army1_count} units", True, (50, 100, 255))
-            self.screen.blit(header1, (panel_x + 5, current_y))
+        # 2. Itérer sur toutes les armées pour afficher leurs stats
+        for index, army in enumerate(armies):
+            army_color = self._get_army_color(index)
+
+            # Initialiser l'état visible par défaut pour cette armée
+            if index not in self.show_army_details_dict:
+                self.show_army_details_dict[index] = True
+
+            if self.show_army_details_dict[index]:
+                army_units = army.living_units()
+                army_count = len(army_units)
+                
+                # Récupérer le nom de la classe du général
+                general_name = type(army.general).__name__ if hasattr(army, 'general') else "General"
+                
+                header = self.font.render(f"Army {index + 1} ({general_name}): {army_count} units", True, army_color)
+                self.screen.blit(header, (panel_x + 10, current_y))
+                current_y += line_height
+
+                # Afficher le décompte par type d'unité si activé (F4)
+                if getattr(self, 'show_unit_counts', True):
+                    # Utiliser un dictionnaire pour compter dynamiquement TOUS les types d'unités
+                    # Cela évite de coder en dur "Knight", "Pikeman", etc.
+                    unit_counts = {}
+                    for u in army_units:
+                        u_type = type(u).__name__
+                        unit_counts[u_type] = unit_counts.get(u_type, 0) + 1
+
+                    # Afficher les résultats du comptage
+                    for u_type, count in unit_counts.items():
+                        text = self.small_font.render(f"  {u_type}s: {count}", True, (200, 200, 200))
+                        self.screen.blit(text, (panel_x + 10, current_y))
+                        current_y += 20 # Espacement plus serré pour les sous-éléments
+                current_y += 5
+            else:
+                # Texte affiché si les détails de l'armée sont masqués
+                hidden_text = self.small_font.render(f"Army {index + 1}: (Hidden)", True, (150, 150, 150))
+                self.screen.blit(hidden_text, (panel_x + 10, current_y))
+                current_y += line_height
+
+            # Dessiner une ligne de séparation entre les armées
+            pygame.draw.line(self.screen, (100, 100, 100), (panel_x + 10, current_y), (panel_x + panel_width - 10, current_y))
             current_y += line_height
 
-            if self.show_unit_counts:
-                knights = sum(1 for u in army1_units if isinstance(u, Knight))
-                pikemen = sum(1 for u in army1_units if isinstance(u, Pikeman))
-                crossbowmen = sum(1 for u in army1_units if isinstance(u, Crossbowman))
-                if knights > 0:
-                    self.screen.blit(self.small_font.render(f"  Knights: {knights}", True, (200, 200, 200)), (panel_x + 5, current_y))
-                    current_y += line_height - 5
-                if pikemen > 0:
-                    self.screen.blit(self.small_font.render(f"  Pikemen: {pikemen}", True, (200, 200, 200)), (panel_x + 5, current_y))
-                    current_y += line_height - 5
-                if crossbowmen > 0:
-                    self.screen.blit(self.small_font.render(f"  Crossbowmen: {crossbowmen}", True, (200, 200, 200)), (panel_x + 5, current_y))
-                    current_y += line_height - 5
-            current_y += 5
-        else:
-            self.screen.blit(self.small_font.render("Army 1: (Press F2)", True, (150, 150, 150)), (panel_x + 5, current_y))
-            current_y += line_height
-
-        pygame.draw.line(self.screen, (100, 100, 100), (panel_x + 5, current_y), (panel_x + panel_width - 5, current_y))
-        current_y += line_height
-
-        if self.show_army2_details:
-            army2_units = army2.living_units()
-            army2_count = len(army2_units)
-            header2 = self.font.render(f"Army 2 ({type(army2.general).__name__}): {army2_count} units", True, (255, 50, 50))
-            self.screen.blit(header2, (panel_x + 5, current_y))
-            current_y += line_height
-
-            if self.show_unit_counts:
-                knights = sum(1 for u in army2_units if isinstance(u, Knight))
-                pikemen = sum(1 for u in army2_units if isinstance(u, Pikeman))
-                crossbowmen = sum(1 for u in army2_units if isinstance(u, Crossbowman))
-                if knights > 0:
-                    self.screen.blit(self.small_font.render(f"  Knights: {knights}", True, (200, 200, 200)), (panel_x + 5, current_y))
-                    current_y += line_height - 5
-                if pikemen > 0:
-                    self.screen.blit(self.small_font.render(f"  Pikemen: {pikemen}", True, (200, 200, 200)), (panel_x + 5, current_y))
-                    current_y += line_height - 5
-                if crossbowmen > 0:
-                    self.screen.blit(self.small_font.render(f"  Crossbowmen: {crossbowmen}", True, (200, 200, 200)), (panel_x + 5, current_y))
-                    current_y += line_height - 5
-        else:
-            self.screen.blit(self.small_font.render("Army 2: (Press F3)", True, (150, 150, 150)), (panel_x + 5, current_y))
-            current_y += line_height
-
-        # Aide textuelle
-        current_y += 10
+        # 3. Afficher les instructions et contrôles en bas du panneau
+        current_y += 5
         help_text = [
             "Contrôles (Souris):",
             "Molette - Zoom / Défilement",
@@ -579,7 +627,8 @@ class PyScreen(Affichage):
             "Clic sur Minimap - Téléportation",
             "Contrôles (Clavier):",
             "M - Afficher/Masquer Minimap",
-            "F1-F4 - Statistiques et Détails",
+            "F1 - Afficher/Masquer UI",
+            "F4 - Afficher/Masquer détails",
             "F11 - Sauvegarde Rapide",
             "F12 - Menu de Chargement",
             "ESPACE - Pause / Reprise",
@@ -587,9 +636,11 @@ class PyScreen(Affichage):
             "C - Centrer la caméra",
             "ECHAP - Quitter le jeu"
         ]
+        
         for line in help_text:
-            self.screen.blit(self.small_font.render(line, True, (150, 150, 150)), (panel_x + 5, current_y))
-            current_y += line_height - 5
+            text = self.small_font.render(line, True, (150, 150, 150))
+            self.screen.blit(text, (panel_x + 10, current_y))
+            current_y += 20
 
     def _quick_save(self):
         import os
