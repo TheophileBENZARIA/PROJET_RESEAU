@@ -1,16 +1,16 @@
 # frontend/terminal_view.py
 from backend.Class.Map import Map
 
-def print_map(game_map: Map):   # Simple terminal-based map visualization
+def print_map(game_map: Map):   
+    # Simple terminal-based map visualization
     for y in range(game_map.height):
         row = ""
         for x in range(game_map.width):
             tile = game_map.grid[x][y]
             if tile.unit:
-                if tile.unit.owner == "Player1":
-                    row += "A"
-                else:
-                    row += "B"
+                owner_name = getattr(tile.unit, "owner", "U")
+                # Lấy chữ cái đầu tiên của tên chủ sở hữu (ví dụ: Player1 -> P)
+                row += str(owner_name)[0].upper() if owner_name else "U"
             else:
                 row += "."
         print(row)
@@ -23,7 +23,6 @@ def launch_curses_battle(battle, delay: float = 0.5):
     Requires frontend.Terminal to be present.
     """
     try:
-        # import lazily to avoid curses initialization when not used
         from frontend.Terminal import run_battle_with_curses
     except Exception as e:
         print("Curses Terminal frontend not available:", e)
