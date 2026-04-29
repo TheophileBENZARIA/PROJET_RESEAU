@@ -273,6 +273,30 @@ static THREAD_RET py_to_lan_thread(void *arg) {
       flush_lan_queue();
     }
 
+    /* Management command from Python: ADD_PEER:ip:port */
+    if (n > 9 && memcmp(buf, "ADD_PEER:", 9) == 0) {
+        char cmd_buf[256];
+        int cmd_len = (n < 255) ? n : 255;
+        memcpy(cmd_buf, buf, cmd_len);
+        cmd_buf[cmd_len] = '\0';
+
+        char *ip_str = cmd_buf + 9;
+        char *port_str = strchr(ip_str, ':');
+        if (port_str) {
+            *port_str = '\0';
+            port_str++;
+            struct sockaddr_in new_peer;
+            memset(&new_peer, 0, sizeof(new_peer));
+            new_peer.sin_family = AF_INET;
+            new_peer.sin_port = htons(atoi(port_str));
+            inet_pton(AF_INET, ip_str, &new_peer.sin_addr);
+            add_peer(&new_peer);
+            printf("[LAN] Added peer via command: %s:%s\n", ip_str, port_str);
+            fflush(stdout);
+        }
+        continue;
+    }
+
     /* Ignore the bare newline registration packet */
     if (n == 1 && buf[0] == '\n')
       continue;

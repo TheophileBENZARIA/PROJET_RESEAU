@@ -88,6 +88,9 @@ class SecurityManager:
 
     def sign_and_encrypt(self, peer_id, payload):
         """Signs and encrypts a payload for a specific peer."""
+        # Work on a copy to avoid modifying the original dictionary (important for multi-peer broadcast)
+        payload = payload.copy()
+        
         # 1. Add TTL (timestamp) + monotonic sequence for replay protection
         self._send_seq += 1
         payload["timestamp"] = time.time()

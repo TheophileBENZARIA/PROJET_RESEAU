@@ -85,7 +85,7 @@ class NetworkBridge:
     # ---- Connexion ----
     def connect(self, remote_ip=None, lan_port=6000, remote_port=6000):
         """Ouvre le socket UDP local, démarre le proxy C et le thread de réception."""
-        
+        self.lan_port = lan_port
         # Démarrage automatique du programme C Proxy
         try:
             import subprocess
@@ -241,7 +241,11 @@ class NetworkBridge:
                         if decrypted_payload:
                             msg["payload"] = decrypted_payload
                         else:
+<<<<<<< HEAD
                             #print(f"[NetworkBridge] Security Error from {peer_id}: {error}")
+=======
+                            # Silently ignore decryption failures (expected during handshake or packet loss)
+>>>>>>> 78561f5 (various bug fixes)
                             continue
 
                 # ---- Filtre de réordonnancement ----
@@ -317,6 +321,7 @@ class NetworkBridge:
             "dest": destination,
             "dep":  self._my_ip,   # our real IP so the remote side can add us to know_ip
             "sender_id": getattr(self, "my_id", "unknown"),
+            "sender_port": getattr(self, "lan_port", 0), # Visible even if payload is encrypted
             "seq":  self._seq_out,
             "type": msg_type,
             "payload": payload_dict
@@ -348,6 +353,22 @@ class NetworkBridge:
             return True
         except Exception as e:
             print(f"[NetworkBridge] Erreur lors de l'envoi ({msg_type}) : {e}")
+            return False
+
+    def add_peer(self, ip, port):
+        """
+        Sends a management command to the Proxy C to add a new peer to its broadcast list.
+        This enables full-mesh peer discovery.
+        """
+        if not self.is_connected:
+            return False
+        
+        cmd = f"ADD_PEER:{ip}:{port}".encode('utf-8')
+        try:
+            self.sock.sendto(cmd, self.server_addr)
+            return True
+        except Exception as e:
+            print(f"[NetworkBridge] Erreur lors de l'envoi de la commande ADD_PEER : {e}")
             return False
 
     # ---- Lecture non-bloquante ----

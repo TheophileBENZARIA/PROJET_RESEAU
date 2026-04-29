@@ -42,7 +42,7 @@ class Test_coherence:
         report =[]
         for unit in new_army.units:
             #collision
-            if new_army.try_collision(unit,map,unit.position, otherArmy,8) :
+            if new_army.try_collision(unit,map,(0,0), otherArmy,8) :
                 report.append({"type": "collision", "unit": unit})
 
             old_unit = old_army.get_unit_by_id(unit.id)

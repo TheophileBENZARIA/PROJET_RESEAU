@@ -43,8 +43,9 @@ class Online(GameMode):
         self.has_started = False
         self.current_sender_id = None
         
-        # Map to display the IP of each player in the UI
-        self.peer_ips = {self.my_id: self.network_bridge._my_ip}
+        # Map to display the IP and port of each player in the UI
+        # Format: {peer_id: (ip, lan_port)}
+        self.peer_ips = {self.my_id: (self.network_bridge._my_ip, self.lan_port)}
         self.peer_slots = {self.my_id: self.spawn_slot}
         self.slot_authority_id = self.my_id if self.is_first else None
         self.last_recv_time = {}
@@ -283,8 +284,9 @@ class Online(GameMode):
         current_owner = ownership.get_owner(unit_id)
         if current_owner and current_owner != self.my_id:
             ownership.request_ownership(unit_id, self.my_id)
-            ip = self.peer_ips.get(current_owner)
-            if ip:
+            peer_info = self.peer_ips.get(current_owner)
+            if peer_info:
+                ip, port = peer_info
                 self.network_bridge.send_message("OWNERSHIP_REQUEST", ip, {
                     "unit_id": unit_id,
                     "requester_id": self.my_id
@@ -318,10 +320,20 @@ class Online(GameMode):
                 
             sender_id = msg.get("sender_id")
             if sender_id and sender_id != self.my_id and sender_id != "unknown":
+                # Discovery of peer port from outer message header
+                remote_port = msg.get("sender_port") or payload.get("my_port")
                 if sender_ip:
-                    self.peer_ips[sender_id] = sender_ip
+                    if sender_id not in self.peer_ips or (remote_port and self.peer_ips[sender_id][1] != remote_port):
+                        port = remote_port or self.remote_port
+                        self.peer_ips[sender_id] = (sender_ip, port)
+                        # Tell proxy to add this peer for direct broadcasting
+                        self.network_bridge.add_peer(sender_ip, port)
+                        print(f"[Online] Discovering new peer connection: {sender_id} at {sender_ip}:{port}")
+                
                 if self.is_first:
                     self._ensure_peer_slot(sender_id)
+                
+                # Handshake initiation
                 if security and sender_id not in security.peer_session_keys:
                     last_hello = self.pending_handshakes.get(sender_id, 0)
                     if time.time() - last_hello > 2.0:
@@ -332,42 +344,28 @@ class Online(GameMode):
                             "public_key": security.get_my_public_key_pem(),
                             "peer_id": self.my_id
                         })
-
-            if msg_type == "SECURE_HELLO":
-                peer_public_key = payload.get("public_key")
-                peer_id = payload.get("peer_id")
-                if peer_id and peer_public_key:
-                    print(f"[Security] Received HELLO from {peer_id}")
-                    security.register_peer(peer_id, peer_public_key)
-                    # Respond with session key ONLY if we are the larger ID
-                    if self.my_id > peer_id:
-                        encrypted_session_key = security.create_session_key(peer_id)
-                        self.network_bridge.send_message("SECURE_KEY_EXCHANGE", sender_ip, {
-                            "encrypted_key": encrypted_session_key,
-                            "peer_id": self.my_id,
-                            "public_key": security.get_my_public_key_pem() # Include our key just in case
-                        })
-                continue
             
-            if msg_type == "SECURE_KEY_EXCHANGE":
-                peer_id = payload.get("peer_id")
-                encrypted_key = payload.get("encrypted_key")
-                peer_public_key = payload.get("public_key")
-                if peer_id and encrypted_key:
-                    if peer_public_key:
-                        security.register_peer(peer_id, peer_public_key)
-                    print(f"[Security] Received Session Key from {peer_id}")
-                    security.handle_session_key(peer_id, encrypted_key)
-                continue
-
+            # If payload is still a string (ciphertext), skip further processing in this loop
             if not isinstance(payload, dict):
                 continue
 
             raw_peer_ips = payload.get("peer_ips", {})
             peer_ips_payload = raw_peer_ips if isinstance(raw_peer_ips, dict) else {}
-            for peer_id, peer_ip in peer_ips_payload.items():
-                if peer_id != self.my_id and peer_ip:
-                    self.peer_ips[peer_id] = peer_ip
+            for p_id, p_info in peer_ips_payload.items():
+                if p_id != self.my_id and p_info:
+                    # p_info should now be [ip, port] or (ip, port)
+                    if isinstance(p_info, (list, tuple)) and len(p_info) == 2:
+                        p_ip, p_port = p_info
+                        if p_id not in self.peer_ips or self.peer_ips[p_id] != (p_ip, p_port):
+                            self.peer_ips[p_id] = (p_ip, p_port)
+                            self.network_bridge.add_peer(p_ip, p_port)
+                            print(f"[Online] Peer {p_id} discovered via gossip: {p_ip}:{p_port}")
+                    else:
+                        # Fallback for old clients (only IP)
+                        if p_id not in self.peer_ips:
+                            self.peer_ips[p_id] = (p_info, self.remote_port)
+                            self.network_bridge.add_peer(p_info, self.remote_port)
+
 
             raw_peer_slots = payload.get("peer_slots", {})
             peer_slots_payload = raw_peer_slots if isinstance(raw_peer_slots, dict) else {}
@@ -454,6 +452,11 @@ class Online(GameMode):
                         self.peer_ips[army_id] = peer_ips_payload[army_id]
                     elif sender_id == army_id and sender_ip:
                         self.peer_ips[army_id] = sender_ip
+                    if army_id in peer_slots_payload:
+                        try:
+                            self.peer_slots[army_id] = int(peer_slots_payload[army_id])
+                        except (TypeError, ValueError):
+                            pass
                     self.last_recv_time[army_id] = time.time()
                     try:
                         if army_id not in self.othersArmy:
@@ -581,10 +584,13 @@ class Online(GameMode):
         # In multi-peer mode, we must send to the IP associated with each peer ID
         # using the correct session key.
         sent_ips = set()
-        for peer_id, ip in self.peer_ips.items():
+        for peer_id, info in self.peer_ips.items():
             if peer_id == self.my_id:
                 continue
+            
+            ip = info[0] if isinstance(info, (list, tuple)) else info
             sent_ips.add(ip)
+            
             security = self.network_bridge.security_manager
             if security and peer_id in security.peer_session_keys:
                 self.network_bridge.send_message("SYNC_UPDATE", ip, payload, peer_id=peer_id)
@@ -684,16 +690,23 @@ class Online(GameMode):
                 for army_id in armies
             },
             "peer_ips": self.peer_ips,
-            "peer_slots": self.peer_slots
+            "peer_slots": self.peer_slots,
+            "my_port": self.lan_port
         }
 
         # Include damage report so the remote peer knows its units took hits
         if self._enemy_damage:
             payload["enemy_damage"] = self._enemy_damage
 
-        # Only host (is_first) decides the map to avoid conflicts
-        if self.is_first and self.map is not None and (self.tick < 20 or self.tick % 50 == 0):
-            payload["map"] = map_to_dict(self.map)
+        # Only host (is_first) decides the map to avoid conflicts.
+        # We send the map more frequently during the first few hundred ticks 
+        # to ensure joiners get it quickly.
+        if self.is_first and self.map is not None:
+            if self.tick < 500:
+                if self.tick % 20 == 0:
+                    payload["map"] = map_to_dict(self.map)
+            elif self.tick % 100 == 0:
+                payload["map"] = map_to_dict(self.map)
 
         return payload
 
