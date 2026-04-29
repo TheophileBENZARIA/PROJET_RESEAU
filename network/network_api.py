@@ -241,11 +241,7 @@ class NetworkBridge:
                         if decrypted_payload:
                             msg["payload"] = decrypted_payload
                         else:
-<<<<<<< HEAD
-                            #print(f"[NetworkBridge] Security Error from {peer_id}: {error}")
-=======
                             # Silently ignore decryption failures (expected during handshake or packet loss)
->>>>>>> 78561f5 (various bug fixes)
                             continue
 
                 # ---- Filtre de réordonnancement ----

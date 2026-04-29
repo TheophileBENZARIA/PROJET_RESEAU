@@ -366,7 +366,6 @@ class Online(GameMode):
                             self.peer_ips[p_id] = (p_info, self.remote_port)
                             self.network_bridge.add_peer(p_info, self.remote_port)
 
-
             raw_peer_slots = payload.get("peer_slots", {})
             peer_slots_payload = raw_peer_slots if isinstance(raw_peer_slots, dict) else {}
             self._apply_peer_slots(peer_slots_payload)
