@@ -131,26 +131,25 @@ class Army:
         find_vector = vector[0] * cos(-1*profondeur*0.5) - vector[1] * sin(-1*profondeur*0.5), vector[0] * sin(-1*profondeur*0.5) + vector[1] * cos(-1*profondeur*0.5)
         return self.try_collision(unit,map,find_vector,otherArmy), find_vector
 
-    def try_collision(self,unit,map,vector, otherArmy):
+    def try_collision(self, unit, map, vector, otherArmy, divide=4):
         collisionE, collisionA, collisionO = False, False, False
         for allie in self.living_units():
             if allie != unit:
-                collisionA = self.test_collision(vector, unit, allie)
+                collisionA = self.test_collision(vector, unit, allie, divide)
                 if collisionA:
-                    # print(unit,allie,vector,unit.position, allie.position)
                     break
         if not isinstance(unit, Elephant) :
             for enemie in otherArmy.living_units():
-                collisionE = self.test_collision(vector, unit, enemie)
+                collisionE = self.test_collision(vector, unit, enemie, divide)
                 if collisionE:
-                # print(unit, enemie,vector, unit.position, enemie.position)
                     break
         for obstacle in map.obstacles:
-            collisionO = self.test_collision(vector, unit, obstacle)
+            collisionO = self.test_collision(vector, unit, obstacle, divide)
             if collisionO: break
         collision = collisionE or collisionA or collisionO
 
         return collision
+
 
 
 
@@ -267,19 +266,19 @@ class Army:
 
 
 
-    def test_collision(self,vector,unit, object):
+    def test_collision(self, vector, unit, object, divide=4):
         """
         rect = (x, y, largeur, hauteur)
         """
 
-        x1, y1 = unit.position[0] +vector[0], unit.position[1] +vector[1]
-        x1-= unit.size/4
-        y1 -= unit.size / 4
-        w1, h1= unit.size/2, unit.size/2
+        x1, y1 = unit.position[0] + vector[0], unit.position[1] + vector[1]
+        x1 -= unit.size / divide
+        y1 -= unit.size / divide
+        w1, h1 = unit.size / divide * 2, unit.size / divide * 2
         x2, y2 = object.position
-        x2 -= unit.size / 4
-        y2 -= unit.size / 4
-        w2, h2 = object.size/2, object.size/2
+        x2 -= unit.size / divide
+        y2 -= unit.size / divide
+        w2, h2 = object.size / divide * 2, object.size / divide * 2
 
         return not (
                 x1 + w1 <= x2 or  # rect1 à gauche de rect2
@@ -287,24 +286,4 @@ class Army:
                 y1 + h1 <= y2 or  # rect1 au-dessus de rect2
                 y1 >= y2 + h2  # rect1 en dessous de rect2
         )
-    """
-
-=======
->>>>>>> 39120288454e66b8353dc6d23954be8dece2d4d6
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any], units_by_id: Dict[str, object]) -> "Army":
-        army = cls(data["owner"])
-        for uid in data.get("unit_ids", []):
-            unit = units_by_id.get(uid)
-            if unit:
-                army.add_unit(unit)
-        return army
-        
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "owner": self.owner,
-            "unit_ids": [u.id for u in self.units],
-        }
-
-
-"""
+
