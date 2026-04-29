@@ -36,14 +36,20 @@ class PyScreen(Affichage):
         self.tile_size = 10  # Taille de base d'une tuile
 
         # Charger les images (tuiles et unités)
-        self.TILE_IMAGE = pygame.image.load(os.path.join(self.path, "tile.bmp")).convert_alpha()
-        self.KNIGHT_IMAGE = pygame.image.load(os.path.join(self.path, "knight.bmp")).convert_alpha()
-        self.PIKEMAN_IMAGE = pygame.image.load(os.path.join(self.path, "pikeman.bmp")).convert_alpha()
-        self.CROSSBOWMAN_IMAGE = pygame.image.load(os.path.join(self.path, "crossbowman.bmp")).convert_alpha()
-        self.ROCHER_IMAGE = pygame.image.load(os.path.join(self.path, "rocher.png"))
-        self.CASTLE_IMAGE = pygame.image.load(os.path.join(self.path, "castle.png"))
-        self.ELEPHANT_IMAGE = pygame.image.load(os.path.join(self.path, "elephant.png"))
-        self.MONK_IMAGE = pygame.image.load(os.path.join(self.path, "monk.png"))
+        # Utiliser .png par défaut pour une meilleure gestion de la transparence sur Linux
+        self.TILE_IMAGE = pygame.image.load(os.path.join(self.path, "tile.png")).convert_alpha()
+        self.KNIGHT_IMAGE = pygame.image.load(os.path.join(self.path, "knight.png")).convert_alpha()
+        self.PIKEMAN_IMAGE = pygame.image.load(os.path.join(self.path, "pikeman.png")).convert_alpha()
+        self.CROSSBOWMAN_IMAGE = pygame.image.load(os.path.join(self.path, "crossbowman.png")).convert_alpha()
+        self.ROCHER_IMAGE = pygame.image.load(os.path.join(self.path, "rocher.png")).convert_alpha()
+        self.CASTLE_IMAGE = pygame.image.load(os.path.join(self.path, "castle.png")).convert_alpha()
+        self.ELEPHANT_IMAGE = pygame.image.load(os.path.join(self.path, "elephant.png")).convert_alpha()
+        self.MONK_IMAGE = pygame.image.load(os.path.join(self.path, "monk.png")).convert_alpha()
+
+        # Cache pour les tuiles transformées
+        self._last_zoom = None
+        self.TILE_LIGHT = None
+        self.TILE_DARK = None
 
         # Variables pour les animations fluides
         self.unit_previous_positions = {}
@@ -76,16 +82,6 @@ class PyScreen(Affichage):
         pygame.font.init()
         self.font = pygame.font.Font(None, 24)
         self.small_font = pygame.font.Font(None, 18)
-
-        # Préparation des tuiles (claires et sombres) pour l'échiquier
-        actual_tile_size = int(self.tile_size * self.zoom_factor) + 4
-        base_tile = pygame.transform.scale(self.TILE_IMAGE, (actual_tile_size, actual_tile_size))
-
-        self.TILE_LIGHT = base_tile.copy()
-        self.TILE_LIGHT.fill((60, 180, 40), special_flags=pygame.BLEND_RGB_MULT)
-
-        self.TILE_DARK = base_tile.copy()
-        self.TILE_DARK.fill((45, 150, 30), special_flags=pygame.BLEND_RGB_MULT)
 
         # Variables pour le contrôle à la souris (Glisser / Drag)
         self.is_dragging = False
@@ -321,12 +317,14 @@ class PyScreen(Affichage):
         actual_tile_size = int(self.tile_size * self.zoom_factor)
         tile_overlap = 4
 
-        # On met à jour les tuiles avec le niveau de zoom actuel
-        base_tile = pygame.transform.scale(self.TILE_IMAGE, (actual_tile_size + tile_overlap, actual_tile_size + tile_overlap))
-        self.TILE_LIGHT = base_tile.copy()
-        self.TILE_LIGHT.fill((60, 180, 40), special_flags=pygame.BLEND_RGB_MULT)
-        self.TILE_DARK = base_tile.copy()
-        self.TILE_DARK.fill((45, 150, 30), special_flags=pygame.BLEND_RGB_MULT)
+        # On met à jour les tuiles avec le niveau de zoom actuel (optimisé avec cache)
+        if self._last_zoom != self.zoom_factor or self.TILE_LIGHT is None:
+            self._last_zoom = self.zoom_factor
+            base_tile = pygame.transform.scale(self.TILE_IMAGE, (actual_tile_size + tile_overlap, actual_tile_size + tile_overlap))
+            self.TILE_LIGHT = base_tile.copy()
+            self.TILE_LIGHT.fill((60, 180, 40), special_flags=pygame.BLEND_RGB_MULT)
+            self.TILE_DARK = base_tile.copy()
+            self.TILE_DARK.fill((45, 150, 30), special_flags=pygame.BLEND_RGB_MULT)
 
         # Dessiner la carte (Tuiles)
         for x in range(int(x_min) - 1, int(x_max) + 1):
