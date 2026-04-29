@@ -25,7 +25,7 @@ class Online(GameMode):
         super().__init__()
         self.max_tick = None
         self.tick = 0
-        self.tick_delay = 1.0
+        self.tick_delay = 0.5
         self.frame_delay = 0.05
         self.verbose = True
         self.my_army = None
@@ -56,6 +56,8 @@ class Online(GameMode):
         self._army_mirrored_for_width = None
         self._last_known_remote_armies = 0
         self._last_logged_map_signature = None
+        # Damage dealt to remote units this tick (unit_id -> hp after attack)
+        self._enemy_damage = {}
 
     def _map_signature(self):
         if self.map is None:
@@ -117,6 +119,10 @@ class Online(GameMode):
         return self.max_tick is None or self.tick < self.max_tick
 
     def end(self):
+        # Arrêt du thread de communication
+        if hasattr(self, "_network_thread_running"):
+            self._network_thread_running = False
+
         # Fermeture de l'affichage
         if hasattr(self.affichage, "shutdown"):
             self.affichage.shutdown()
@@ -246,9 +252,23 @@ class Online(GameMode):
                 except Exception as e:
                     print(f"[Online] Erreur lors du chargement de la map : {e}")
 
+            # Apply damage the remote peer computed against our units
+            enemy_damage = payload.get("enemy_damage", {})
+            if enemy_damage and self.my_army:
+                my_units_by_id = {u.id: u for u in self.my_army.units}
+                for unit_id, reported_hp in enemy_damage.items():
+                    if unit_id in my_units_by_id:
+                        u = my_units_by_id[unit_id]
+                        # Only reduce HP, never increase (prevents revival from stale packets)
+                        if reported_hp < u.hp:
+                            u.hp = reported_hp
+                        if u.hp < 0:
+                            u.hp = 0
+
             armies_payload = payload.get("armies", payload)
             if not isinstance(armies_payload, dict):
                 continue
+
 
             for army_id, army_data in armies_payload.items():
                 if army_id != self.my_id:
@@ -260,19 +280,78 @@ class Online(GameMode):
                         self.peer_ips[army_id] = sender_ip
                     self.last_recv_time[army_id] = time.time()
                     try:
-                        army = json_to_army(army_data)
-                        self._mark_army_owner(army, army_id)
-                        self.othersArmy[army_id] = army
-                        
-                        # Register ownership of remote units
-                        for unit in army.units:
-                            ownership.assign_ownership(unit.id, army_id)
+                        if army_id not in self.othersArmy:
+                            # First time we see this army: create it fresh
+                            new_army = json_to_army(army_data)
+                            self._mark_army_owner(new_army, army_id)
+                            self.othersArmy[army_id] = new_army
+                            for unit in new_army.units:
+                                ownership.assign_ownership(unit.id, army_id)
+                        else:
+                            # Subsequent updates: patch units IN-PLACE by ID
+                            # This preserves object identity so PyScreen animation
+                            # continues tracking the same objects without restarting.
+                            existing_army = self.othersArmy[army_id]
+                            existing_by_id = {u.id: u for u in existing_army.units}
+                            
+                            incoming_units = army_data.get("units", [])
+                            incoming_ids = set()
+                            
+                            for unit_data in incoming_units:
+                                uid = unit_data.get("id")
+                                if uid is None:
+                                    continue
+                                incoming_ids.add(uid)
+                                remote_hp = unit_data.get("hp", 0)
+                                remote_pos = unit_data.get("position")
+                                remote_cooldown = unit_data.get("cooldown", 0)
+                                
+                                if uid in existing_by_id:
+                                    # Update in-place: always trust remote for position,
+                                    # keep min HP so damage is never undone.
+                                    u = existing_by_id[uid]
+                                    if remote_pos is not None:
+                                        u.position = tuple(remote_pos)
+                                    u.hp = min(u.hp, remote_hp)
+                                    u.cooldown = remote_cooldown
+                                else:
+                                    # New unit joined mid-game
+                                    cls_name = unit_data.get("type")
+                                    from backend.Utils.convert_json import json_to_army as _j2a
+                                    try:
+                                        cls = globals().get(cls_name)
+                                        if cls is None:
+                                            import importlib, backend.Class.Units
+                                            mod = importlib.import_module(
+                                                f"backend.Class.Units.{cls_name}")
+                                            cls = getattr(mod, cls_name)
+                                        pos = tuple(remote_pos) if remote_pos else (0, 0)
+                                        new_unit = cls(position=pos)
+                                        new_unit._Unit__id = uid
+                                        new_unit.hp = remote_hp
+                                        new_unit.cooldown = remote_cooldown
+                                        new_unit.network_owner_id = army_id
+                                        existing_army.units.append(new_unit)
+                                        ownership.assign_ownership(uid, army_id)
+                                    except Exception:
+                                        pass
+                            
+                            # Mark units absent from network as dead (hp=0)
+                            for uid, u in existing_by_id.items():
+                                if uid not in incoming_ids:
+                                    u.hp = 0
                     except Exception as e:
-                        print(f"[Online] Erreur lors du chargement de l'armee de {army_id} : {e}")
-                    updated = True
+                        print(f"[Online] Erreur lors du merge de l'armee de {army_id} : {e}")
+
                 else:
-                    self.my_army = json_to_army(army_data)
-                    self._mark_army_owner(self.my_army, self.my_id)
+                    try:
+                        remote_view_of_me = json_to_army(army_data)
+                        local_units = {u.id: u for u in self.my_army.units}
+                        for unit in remote_view_of_me.units:
+                            if unit.id in local_units:
+                                local_units[unit.id].hp = min(local_units[unit.id].hp, unit.hp)
+                    except Exception as e:
+                        print(f"[Online] Erreur lors du merge des degats pour mon armee : {e}")
         
         known_remote_armies = len(self.othersArmy)
         if known_remote_armies != self._last_known_remote_armies:
@@ -283,18 +362,13 @@ class Online(GameMode):
     def run(self):
         """
         Étape principale de la simulation pour le mode Online :
-        1. Recevoir les mises à jour des pairs
-        2. Si aucun pair, attendre et afficher 'En attente...'
-        3. Si pair trouvé, exécuter la simulation
-        4. Diffuser l'état local aux pairs
+        1. Si aucun pair, attendre (la diffusion est gérée par le thread réseau)
+        2. Si pair trouvé, exécuter la simulation locale
+        Note: message_receive() et _broadcast_state() sont gérés par le thread réseau
         """
-        self.message_receive()
-
         if not self.othersArmy:
             if self.tick % 100 == 0:
                 print("En attente d'un autre joueur...")
-            # Diffuser quand même notre présence pour que l'autre puisse nous trouver
-            self._broadcast_state()
             return
 
         if not self.has_started:
@@ -306,59 +380,57 @@ class Online(GameMode):
         for unit in self.my_army.units:
             ownership.assign_ownership(unit.id, self.my_id)
 
-        # Exécuter la logique de combat pour NOS unités
-        # We need to fight AGAINST everyone else combined
-        all_enemies = self.flat() 
-        
-        self.current_sender_id = self.my_id # We are the executor for our own units
+        # Build enemy reference BEFORE fight so we can snapshot HP
+        all_enemies = self.flat()
+        hp_before = {u.id: u.hp for u in all_enemies.units}
+
+        self.current_sender_id = self.my_id
         self.my_army.fight(self.map, otherArmy=all_enemies)
-        self.update_dead(all_enemies)
-        
-        # ---- AI Takeover pour les joueurs déconnectés ----
-        current_time = time.time()
-        for army_id, army in self.othersArmy.items():
-            if army_id in self.last_recv_time:
-                if current_time - self.last_recv_time[army_id] > 5.0:
-                    # Le joueur s'est déconnecté. On simule son armée via l'IA contre NOUS.
-                    self.current_sender_id = army_id
-                    army.fight(self.map, otherArmy=self.my_army)
-        
+
+        # Record HP reductions we dealt to enemy units.
+        # These are broadcast so the remote peer can apply them to its own army.
+        damage_report = {}
+        for u in all_enemies.units:
+            if u.hp < hp_before.get(u.id, u.hp):
+                damage_report[u.id] = u.hp  # HP after damage
+        self._enemy_damage = damage_report
+
         # Incrémenter le tick
         self.tick += 1
-        
-        self._broadcast_state()
+
 
     def _broadcast_state(self):
-        payload_list = self.create_payload()
+        payload = self.create_payload()
 
-        for payload in payload_list:
-            if not self.know_ip:
-                # Envoie un paquet bidon pour enregistrer le port Python auprès du proxy C
-                self.network_bridge.send_message("SYNC_UPDATE", "0.0.0.0", payload)
-                return
+        if not self.know_ip:
+            # Envoie un paquet bidon pour enregistrer le port Python auprès du proxy C
+            self.network_bridge.send_message("SYNC_UPDATE", "0.0.0.0", payload)
+            return
 
-            # Broadcast to all known IPs
-            # In multi-peer mode, we must send to the IP associated with each peer ID
-            # using the correct session key.
-            other_peer_ips = []
-            for peer_id, ip in self.peer_ips.items():
-                if peer_id == self.my_id:
-                    continue
-                other_peer_ips.append(ip)
-                security = self.network_bridge.security_manager
-                if security and peer_id in security.peer_session_keys:
-                    self.network_bridge.send_message("SYNC_UPDATE", ip, payload, peer_id=peer_id)
-                else:
-                    self.network_bridge.send_message("SYNC_UPDATE", ip, payload)
+        # Broadcast to all known IPs
+        # In multi-peer mode, we must send to the IP associated with each peer ID
+        # using the correct session key.
+        sent_ips = set()
+        for peer_id, ip in self.peer_ips.items():
+            if peer_id == self.my_id:
+                continue
+            sent_ips.add(ip)
+            security = self.network_bridge.security_manager
+            if security and peer_id in security.peer_session_keys:
+                self.network_bridge.send_message("SYNC_UPDATE", ip, payload, peer_id=peer_id)
+            else:
+                self.network_bridge.send_message("SYNC_UPDATE", ip, payload)
 
-            # Fallback for IPs in know_ip that are not in peer_ips yet (handshake phase)
-            for ip in self.know_ip:
-                if ip not in other_peer_ips:
-                    self.network_bridge.send_message("SYNC_UPDATE", ip, payload)
+        # Fallback for IPs in know_ip that are not in peer_ips yet (handshake phase)
+        for ip in self.know_ip:
+            if ip not in sent_ips:
+                self.network_bridge.send_message("SYNC_UPDATE", ip, payload)
 
     def update_dead(self, all_enemies):
-        for army in self.othersArmy.values():
-            army.units = [u for u in army.units if u in all_enemies.units]
+        # Ne pas supprimer les unités mortes de self.othersArmy.
+        # Cela permet de garder leur HP = 0 dans 'old_hp' lors de la réception UDP, 
+        # empêchant les troupes de ressusciter via les paquets réseau décalés.
+        pass
 
     @property
     def army1(self):
@@ -369,6 +441,8 @@ class Online(GameMode):
         return self.flat()
 
     def launch(self):
+        if self.my_army:
+            self.my_army.gameMode = self
         self._remember_base_positions()
         self._deploy_my_army_for_current_map()
         self._log_map_if_changed()
@@ -376,6 +450,21 @@ class Online(GameMode):
         self.affichage.initialiser()
         remote_ip = list(self.know_ip)[0] if self.know_ip else None
         self.network_bridge.connect(remote_ip=remote_ip, lan_port=self.lan_port, remote_port=self.remote_port)
+        
+        # Démarrer le thread de communication réseau rapide (découplé du tick de combat)
+        import threading
+        self._network_thread_running = True
+        def network_loop():
+            while self._network_thread_running:
+                try:
+                    self.message_receive()
+                    self._broadcast_state()
+                except Exception:
+                    pass
+                time.sleep(0.02) # 50 updates/second
+        
+        self._network_thread = threading.Thread(target=network_loop, daemon=True)
+        self._network_thread.start()
         
         # Envoyer immédiatement un premier paquet pour s'enregistrer auprès du proxy C
         self._broadcast_state()
@@ -394,29 +483,25 @@ class Online(GameMode):
                 self.othersArmy[k] = json_to_army(army[k])
 
     def create_payload(self):
-        local_payload = {
+        # Each peer is authoritative for its OWN army ONLY for positions.
+        # We also include "enemy_damage": HP values we computed for enemy units
+        # so the remote peer can apply damage to its own units.
+        payload = {
             "armies": {
                 self.my_id: army_to_dict(self.my_army)
             },
             "peer_ips": self.peer_ips
         }
 
-        result = []
-        # In multi-peer mode, everyone should ideally know about everyone.
-        # If we only send OUR army, a new peer joining P1 (host) might not see P2 if P2 doesn't know P3 yet.
-        # So we broadcast all known armies.
-        for army_id, army_obj in self.othersArmy.items():
-            result.append({
-                "armies": {army_id: army_to_dict(army_obj)},
-                "peer_ips": self.peer_ips
-            })
+        # Include damage report so the remote peer knows its units took hits
+        if self._enemy_damage:
+            payload["enemy_damage"] = self._enemy_damage
 
         # Only host (is_first) decides the map to avoid conflicts
         if self.is_first and self.map is not None and (self.tick < 20 or self.tick % 50 == 0):
-            local_payload["map"] = map_to_dict(self.map)
+            payload["map"] = map_to_dict(self.map)
 
-        result.append(local_payload)
-        return result
+        return payload
 
 
     @army1.setter

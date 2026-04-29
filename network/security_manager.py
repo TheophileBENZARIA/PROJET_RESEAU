@@ -23,8 +23,10 @@ class SecurityManager:
         # Store peer session keys: {peer_id: aes_key}
         self.peer_session_keys = {}
         
-        # To prevent replay attacks even within TTL window: {peer_id: last_timestamp}
+        # Replay protection: track highest seq seen per peer
         self.peer_last_timestamp = {}
+        # Outgoing sequence counter (monotonic, per instance)
+        self._send_seq = 0
 
     def get_my_public_key_pem(self):
         return self.public_key.public_bytes(
@@ -86,8 +88,10 @@ class SecurityManager:
 
     def sign_and_encrypt(self, peer_id, payload):
         """Signs and encrypts a payload for a specific peer."""
-        # 1. Add TTL (timestamp)
+        # 1. Add TTL (timestamp) + monotonic sequence for replay protection
+        self._send_seq += 1
         payload["timestamp"] = time.time()
+        payload["_seq"] = self._send_seq
         
         json_payload = json.dumps(payload).encode('utf-8')
         
@@ -161,17 +165,25 @@ class SecurityManager:
             
             payload = json.loads(json_payload_bytes.decode('utf-8'))
             
-            # 3. Verify TTL (Replay Protection)
+            # 3. Verify TTL and replay protection via monotonic sequence
             msg_timestamp = payload.get("timestamp", 0)
             current_time = time.time()
             
             if current_time - msg_timestamp > self.ttl_limit:
                 return None, "Message expired (TTL)"
             
-            if msg_timestamp <= self.peer_last_timestamp.get(peer_id, 0):
-                return None, "Replay attack detected (Timestamp older or equal to last seen)"
-            
-            self.peer_last_timestamp[peer_id] = msg_timestamp
+            # Use _seq for replay detection (strictly increasing per sender)
+            msg_seq = payload.get("_seq", None)
+            last_seq = self.peer_last_timestamp.get(peer_id, -1)
+            if msg_seq is not None:
+                if msg_seq <= last_seq:
+                    return None, "Replay attack detected (seq older or equal to last seen)"
+                self.peer_last_timestamp[peer_id] = msg_seq
+            else:
+                # Legacy fallback: timestamp-based (allow equal timestamps)
+                if msg_timestamp < self.peer_last_timestamp.get(peer_id + "_ts", 0):
+                    return None, "Replay attack detected (timestamp too old)"
+                self.peer_last_timestamp[peer_id + "_ts"] = msg_timestamp
             
             return payload, None
             

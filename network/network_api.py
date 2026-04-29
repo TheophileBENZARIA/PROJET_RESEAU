@@ -3,6 +3,7 @@ import json
 import threading
 import queue
 import zlib
+import uuid
 
 # ============================================================
 #   NetworkBridge — Pont réseau Python ↔ Proxy C (UDP)
@@ -38,6 +39,7 @@ class NetworkBridge:
         # Sépare le thread réseau de la boucle principale du jeu
         self.incoming_queue = queue.Queue()
         self.receive_thread = None
+        self._partial_messages = {}  # For reassembling chunked packets
 
         # Handle to the Proxy C subprocess
         self.proxy_process = None
@@ -163,6 +165,35 @@ class NetworkBridge:
                 data, addr = self.sock.recvfrom(65535)
                 if not data:
                     continue
+
+                # ---- Chunk reassembly ----
+                if data[:6] == b"CHUNK\0":
+                    try:
+                        parts = data[6:].split(b"\0", 2)
+                        msg_id = parts[0].decode('utf-8')
+                        info = parts[1].split(b":")
+                        chunk_idx = int(info[0])
+                        total = int(info[1])
+                        chunk_data = parts[2]
+
+                        if msg_id not in self._partial_messages:
+                            self._partial_messages[msg_id] = [None] * total
+                        self._partial_messages[msg_id][chunk_idx] = chunk_data
+
+                        if None not in self._partial_messages[msg_id]:
+                            data = b"".join(self._partial_messages[msg_id])
+                            del self._partial_messages[msg_id]
+                        else:
+                            continue
+                    except Exception as e:
+                        print(f"[NetworkBridge] Erreur reassemblage chunk: {e}")
+                        continue
+
+                    # Purge stale incomplete messages (older than 64 entries)
+                    if len(self._partial_messages) > 64:
+                        oldest = list(self._partial_messages.keys())[:len(self._partial_messages) - 32]
+                        for k in oldest:
+                            del self._partial_messages[k]
 
                 try:
                     data = zlib.decompress(data)
@@ -296,11 +327,22 @@ class NetworkBridge:
             # JSON compact : pas d'espaces → taille minimale
             donnees_str = json.dumps(message, separators=(',', ':'))
             donnees = zlib.compress(donnees_str.encode('utf-8'))
-            self.sock.sendto(donnees, self.server_addr)
+
+            # ---- Chunking : split large datagrams to avoid IP fragmentation ----
+            CHUNK_SIZE = 1200  # Safe margin below 1500 MTU (header overhead)
+            if len(donnees) > CHUNK_SIZE:
+                msg_id = uuid.uuid4().hex
+                total = (len(donnees) + CHUNK_SIZE - 1) // CHUNK_SIZE
+                for i in range(total):
+                    chunk = donnees[i * CHUNK_SIZE:(i + 1) * CHUNK_SIZE]
+                    header = b"CHUNK\0" + msg_id.encode() + b"\0" + f"{i}:{total}".encode() + b"\0"
+                    self.sock.sendto(header + chunk, self.server_addr)
+            else:
+                self.sock.sendto(donnees, self.server_addr)
 
             # Avertir si le datagramme dépasse le MTU standard (1500 octets)
             taille = len(donnees)
-            if taille > 1400:
+            if taille > 1400 and taille <= CHUNK_SIZE:
                 print(f"[NetworkBridge] ATTENTION : datagramme volumineux "
                       f"({taille} octets, MTU ~ 1500). Risque de fragmentation !")
             return True

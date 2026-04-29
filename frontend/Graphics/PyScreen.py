@@ -47,7 +47,7 @@ class PyScreen(Affichage):
         self.unit_previous_positions = {}
         self.unit_animation_start_pos = {}
         self.animation_start_time = {}
-        self.animation_duration = 1.15
+        self.animation_duration = 0.45
 
         # Paramètres de la minimap et de l'UI
         self.show_minimap = True
@@ -142,33 +142,38 @@ class PyScreen(Affichage):
         unit_id = unit.id
         current_pos = unit.position
 
-        if unit_id in self.unit_previous_positions:
-            stored_pos = self.unit_previous_positions[unit_id]
-
-            if stored_pos != current_pos:
-                self.unit_animation_start_pos[unit_id] = stored_pos
-                self.animation_start_time[unit_id] = time.time()
-                self.unit_previous_positions[unit_id] = current_pos
-                return stored_pos
-            else:
-                if unit_id in self.animation_start_time and unit_id in self.unit_animation_start_pos:
-                    elapsed = time.time() - self.animation_start_time[unit_id]
-                    if elapsed < self.animation_duration:
-                        start_pos = self.unit_animation_start_pos[unit_id]
-                        t = elapsed / self.animation_duration
-                        t = t * t * (3.0 - 2.0 * t)  # Smoothstep (interpolation douce)
-                        interp_x = start_pos[0] + (current_pos[0] - start_pos[0]) * t
-                        interp_y = start_pos[1] + (current_pos[1] - start_pos[1]) * t
-                        return (interp_x, interp_y)
-                    else:
-                        if unit_id in self.animation_start_time:
-                            del self.animation_start_time[unit_id]
-                        if unit_id in self.unit_animation_start_pos:
-                            del self.unit_animation_start_pos[unit_id]
-
         if unit_id not in self.unit_previous_positions:
+            # First time we see this unit: register and draw at its position
             self.unit_previous_positions[unit_id] = current_pos
+            return current_pos
+
+        stored_pos = self.unit_previous_positions[unit_id]
+
+        if stored_pos != current_pos:
+            # Position changed: start a new animation from stored_pos → current_pos
+            self.unit_animation_start_pos[unit_id] = stored_pos
+            self.animation_start_time[unit_id] = time.time()
+            self.unit_previous_positions[unit_id] = current_pos
+            # Return interpolated at t=0 (start of animation = old position)
+            return stored_pos
+
+        # Position stable: if an animation is in progress, continue it
+        if unit_id in self.animation_start_time and unit_id in self.unit_animation_start_pos:
+            elapsed = time.time() - self.animation_start_time[unit_id]
+            if elapsed < self.animation_duration:
+                start_pos = self.unit_animation_start_pos[unit_id]
+                t = elapsed / self.animation_duration
+                t = t * t * (3.0 - 2.0 * t)  # Smoothstep
+                interp_x = start_pos[0] + (current_pos[0] - start_pos[0]) * t
+                interp_y = start_pos[1] + (current_pos[1] - start_pos[1]) * t
+                return (interp_x, interp_y)
+            else:
+                # Animation finished, clean up
+                del self.animation_start_time[unit_id]
+                del self.unit_animation_start_pos[unit_id]
+
         return current_pos
+
 
     def _get_max_hp(self, unit):
         """Obtenir les points de vie max."""
