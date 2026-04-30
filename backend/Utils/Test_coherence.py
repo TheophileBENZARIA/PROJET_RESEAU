@@ -34,8 +34,15 @@ class Test_coherence:
         return report
 
     def set_armies(self,my_army, othersArmy :dict):
+        owner = my_army.owner
+        my_army.owner = None
         self.MY_ARMY = copy.deepcopy(my_army)
+        my_army.owner = owner
+        owner = othersArmy.owner
+        othersArmy.owner = None
         self.OTHER_ARMY = copy.deepcopy(othersArmy)
+        othersArmy.owner = owner
+
 
     @staticmethod
     def compare_army(old_army, new_army,map, otherArmy):
