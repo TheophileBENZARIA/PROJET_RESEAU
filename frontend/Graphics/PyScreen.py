@@ -105,10 +105,10 @@ class PyScreen(Affichage):
     def _label_for_slot(self, slot):
         if isinstance(slot, int):
             if 0 <= slot < 26:
-                return f"Player {chr(ord('A') + slot)}"
+                return f"{slot}"
             if slot < 0:
-                return "Joining..."
-        return f"Player {slot}"
+                return ""
+        return f"{slot}"
 
     def _style_for_owner(self, owner_id, fallback_index=None):
         # 1. Handle special/fixed offline styles (Army 1 = Blue, Army 2 = Red)
@@ -127,19 +127,27 @@ class PyScreen(Affichage):
         if getattr(self, "player_styles", None) is None:
             self.player_styles = {}
 
-        # If already assigned this session, check if we need to update the label based on current peer_slots
+        battle = getattr(self, "battle_instance", None)
+        peer_ips = getattr(battle, "peer_ips", {})
+        peer_slots = getattr(battle, "peer_slots", {})
+
+        # If already assigned this session, check if we need to update the label
         if owner_id in self.player_styles:
             style = self.player_styles[owner_id]
-            peer_slots = getattr(getattr(self, "battle_instance", None), "peer_slots", {})
-            if owner_id in peer_slots:
+            
+            if owner_id in peer_ips:
+                new_label = str(peer_ips[owner_id][0])
+            elif owner_id in peer_slots:
                 try:
                     slot = int(peer_slots[owner_id])
                     new_label = self._label_for_slot(slot)
-                    # Update label if it changed (e.g. from "Joining..." to "Player C")
-                    if style["label"] != new_label:
-                        style["label"] = new_label
                 except (TypeError, ValueError):
-                    pass
+                    new_label = style["label"]
+            else:
+                new_label = style["label"]
+
+            if style["label"] != new_label:
+                style["label"] = new_label
             return style
 
         # 2. Use stable hash for persistent colors based on owner_id (UID)
@@ -148,9 +156,10 @@ class PyScreen(Affichage):
         uid_hash = zlib.adler32(uid_str.encode('utf-8'))
         color_index = uid_hash % len(self.color_palette)
 
-        # 3. Handle Label - we still try to use the peer_slots if available
-        peer_slots = getattr(getattr(self, "battle_instance", None), "peer_slots", {})
-        if owner_id in peer_slots:
+        # 3. Handle Label - we use IP if available, otherwise fallback to slot-based label
+        if owner_id in peer_ips:
+            label = str(peer_ips[owner_id][0])
+        elif owner_id in peer_slots:
             try:
                 slot = int(peer_slots[owner_id])
                 label = self._label_for_slot(slot)
@@ -658,14 +667,8 @@ class PyScreen(Affichage):
             if units and owner_id == local_owner and army1.general:
                 general_name = f" ({type(army1.general).__name__})"
 
-            ip_suffix = ""
-            if hasattr(self.battle_instance, 'peer_ips'):
-                ip = self.battle_instance.peer_ips.get(owner_id)
-                if ip:
-                    ip_suffix = f" [{ip}]"
-
             owner_label = self._label_for_owner(owner_id, index)
-            header_text = f"{owner_label}{general_name}{ip_suffix}: {len(units)} units"
+            header_text = f"{owner_label}{general_name}: {len(units)} units"
             header_font = self.font
             if self.font.size(header_text)[0] > panel_width - 10:
                 header_font = self.small_font
