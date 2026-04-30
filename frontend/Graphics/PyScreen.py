@@ -150,13 +150,23 @@ class PyScreen(Affichage):
                 style["label"] = new_label
             return style
 
-        # 2. Use stable hash for persistent colors based on owner_id (UID)
-        # This ensures the same player (UID) always gets the same color from the palette.
-        uid_str = str(owner_id)
-        uid_hash = zlib.adler32(uid_str.encode('utf-8'))
-        color_index = uid_hash % len(self.color_palette)
+        # 2. Prefer authoritative slot-based color when available so every client
+        # maps the same player slot to the same palette index.
+        if owner_id in peer_slots:
+            try:
+                color_index = int(peer_slots[owner_id]) % len(self.color_palette)
+            except (TypeError, ValueError):
+                color_index = None
+        else:
+            color_index = None
 
-        # 3. Handle Label - we use IP if available, otherwise fallback to slot-based label
+        # 3. Fallback: stable hash based on owner_id (UID) if slot is unavailable.
+        if color_index is None:
+            uid_str = str(owner_id)
+            uid_hash = zlib.adler32(uid_str.encode('utf-8'))
+            color_index = uid_hash % len(self.color_palette)
+
+        # 4. Handle Label - we use IP if available, otherwise fallback to slot-based label
         if owner_id in peer_ips:
             label = str(peer_ips[owner_id][0])
         elif owner_id in peer_slots:
