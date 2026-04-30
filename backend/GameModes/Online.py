@@ -579,10 +579,10 @@ class Online(GameMode):
                 damage_report[u.id] = u.hp  # HP after damage
         self._enemy_damage = damage_report
 
-        report = self.Test_coherence.test_coherence(self)
-        self.Test_coherence.print_report(report)
+        #report = self.Test_coherence.test_coherence(self)
+        #self.Test_coherence.print_report(report)
 
-        self.Test_coherence.set_armies(self.my_army, self.othersArmy)
+        #self.Test_coherence.set_armies(self.my_army, self.othersArmy)
 
         # Incrémenter le tick
         self.tick += 1
