@@ -131,6 +131,19 @@ class PyScreen(Affichage):
         peer_ips = getattr(battle, "peer_ips", {})
         peer_slots = getattr(battle, "peer_slots", {})
 
+        def _resolve_color_index():
+            # Prefer authoritative slot-based color when available so every client
+            # maps the same player slot to the same palette index.
+            if owner_id in peer_slots:
+                try:
+                    return int(peer_slots[owner_id]) % len(self.color_palette)
+                except (TypeError, ValueError):
+                    pass
+            # Fallback: stable hash based on owner_id (UID) if slot is unavailable.
+            uid_str = str(owner_id)
+            uid_hash = zlib.adler32(uid_str.encode('utf-8'))
+            return uid_hash % len(self.color_palette)
+
         # If already assigned this session, check if we need to update the label
         if owner_id in self.player_styles:
             style = self.player_styles[owner_id]
@@ -148,23 +161,11 @@ class PyScreen(Affichage):
 
             if style["label"] != new_label:
                 style["label"] = new_label
+            # Refresh color in case slot assignment changed after initial cache.
+            style["color"] = self.color_palette[_resolve_color_index()]
             return style
 
-        # 2. Prefer authoritative slot-based color when available so every client
-        # maps the same player slot to the same palette index.
-        if owner_id in peer_slots:
-            try:
-                color_index = int(peer_slots[owner_id]) % len(self.color_palette)
-            except (TypeError, ValueError):
-                color_index = None
-        else:
-            color_index = None
-
-        # 3. Fallback: stable hash based on owner_id (UID) if slot is unavailable.
-        if color_index is None:
-            uid_str = str(owner_id)
-            uid_hash = zlib.adler32(uid_str.encode('utf-8'))
-            color_index = uid_hash % len(self.color_palette)
+        color_index = _resolve_color_index()
 
         # 4. Handle Label - we use IP if available, otherwise fallback to slot-based label
         if owner_id in peer_ips:
