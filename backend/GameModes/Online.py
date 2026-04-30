@@ -373,7 +373,7 @@ class Online(GameMode):
                         if p_id not in self.peer_ips or self.peer_ips[p_id] != (p_ip, p_port):
                             self.peer_ips[p_id] = (p_ip, p_port)
                             self.network_bridge.add_peer(p_ip, p_port)
-                            print(f"[Online] Peer {p_id} discovered via gossip: {p_ip}:{p_port}")
+                            #print(f"[Online] Peer {p_id} discovered via gossip: {p_ip}:{p_port}")
                     else:
                         # Fallback for old clients (only IP)
                         if p_id not in self.peer_ips:
@@ -562,6 +562,8 @@ class Online(GameMode):
         for unit in self.my_army.units:
             ownership.assign_ownership(unit.id, self.my_id)
 
+
+
         # Build enemy reference BEFORE fight so we can snapshot HP
         all_enemies = self.flat()
         hp_before = {u.id: u.hp for u in all_enemies.units}
@@ -576,6 +578,11 @@ class Online(GameMode):
             if u.hp < hp_before.get(u.id, u.hp):
                 damage_report[u.id] = u.hp  # HP after damage
         self._enemy_damage = damage_report
+
+        report = self.Test_coherence.test_coherence(self)
+        self.Test_coherence.print_report(report)
+
+        self.Test_coherence.set_armies(self.my_army, self.othersArmy)
 
         # Incrémenter le tick
         self.tick += 1
