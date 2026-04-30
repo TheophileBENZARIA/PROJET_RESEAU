@@ -37,6 +37,7 @@ class Test_coherence:
 
         self.MY_ARMY.units = copy.deepcopy(my_army.units)
         for k in othersArmy.keys():
+            self.OTHER_ARMY[k] = Army()
             self.OTHER_ARMY[k].units = copy.deepcopy(othersArmy[k].units)
 
 
