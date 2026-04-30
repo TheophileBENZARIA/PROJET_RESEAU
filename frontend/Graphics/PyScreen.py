@@ -131,18 +131,65 @@ class PyScreen(Affichage):
         peer_ips = getattr(battle, "peer_ips", {})
         peer_slots = getattr(battle, "peer_slots", {})
 
+        def _valid_slot_color_index(player_id):
+            if player_id not in peer_slots:
+                return None
+            try:
+                slot = int(peer_slots[player_id])
+            except (TypeError, ValueError):
+                return None
+            if slot < 0:
+                return None
+            return slot % len(self.color_palette)
+
+        def _used_color_indexes(exclude_owner=None, include_cached=True):
+            used = set()
+            for player_id in peer_slots:
+                if player_id == exclude_owner:
+                    continue
+                slot_color = _valid_slot_color_index(player_id)
+                if slot_color is not None:
+                    used.add(slot_color)
+
+            if not include_cached:
+                return used
+
+            for player_id, style in self.player_styles.items():
+                if player_id == exclude_owner:
+                    continue
+                color_index = style.get("color_index")
+                if isinstance(color_index, int):
+                    used.add(color_index % len(self.color_palette))
+            return used
+
         def _resolve_color_index():
-            # Prefer authoritative slot-based color when available so every client
-            # maps the same player slot to the same palette index.
-            if owner_id in peer_slots:
-                try:
-                    return int(peer_slots[owner_id]) % len(self.color_palette)
-                except (TypeError, ValueError):
-                    pass
-            # Fallback: stable hash based on owner_id (UID) if slot is unavailable.
+            # Use slot colors only after the host assigns a real slot. Temporary
+            # joiner slot -1 would otherwise map to the last palette color.
+            slot_color = _valid_slot_color_index(owner_id)
+            if slot_color is not None:
+                used_slot_colors = _used_color_indexes(owner_id, include_cached=False)
+                if slot_color not in used_slot_colors:
+                    return slot_color
+
+            used_colors = _used_color_indexes(owner_id)
+
+            current_style = self.player_styles.get(owner_id)
+            if current_style:
+                current_color = current_style.get("color_index")
+                if isinstance(current_color, int) and current_color not in used_colors:
+                    return current_color % len(self.color_palette)
+
             uid_str = str(owner_id)
             uid_hash = zlib.adler32(uid_str.encode('utf-8'))
-            return uid_hash % len(self.color_palette)
+            preferred_color = uid_hash % len(self.color_palette)
+            if preferred_color not in used_colors:
+                return preferred_color
+
+            for offset in range(len(self.color_palette)):
+                color_index = (preferred_color + offset) % len(self.color_palette)
+                if color_index not in used_colors:
+                    return color_index
+            return preferred_color
 
         # If already assigned this session, check if we need to update the label
         if owner_id in self.player_styles:
@@ -162,7 +209,9 @@ class PyScreen(Affichage):
             if style["label"] != new_label:
                 style["label"] = new_label
             # Refresh color in case slot assignment changed after initial cache.
-            style["color"] = self.color_palette[_resolve_color_index()]
+            color_index = _resolve_color_index()
+            style["color_index"] = color_index
+            style["color"] = self.color_palette[color_index]
             return style
 
         color_index = _resolve_color_index()
@@ -183,6 +232,7 @@ class PyScreen(Affichage):
             
         style = {
             "label": label,
+            "color_index": color_index,
             "color": self.color_palette[color_index]
         }
         self.player_styles[owner_id] = style
