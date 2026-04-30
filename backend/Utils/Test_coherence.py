@@ -7,8 +7,8 @@ from backend.Class.Army import Army
 class Test_coherence:
 
     def __init__(self):
-        self.MY_ARMY=None
-        self.OTHER_ARMY =None
+        self.MY_ARMY=Army()
+        self.OTHER_ARMY ={}
 
 
 
@@ -34,14 +34,10 @@ class Test_coherence:
         return report
 
     def set_armies(self,my_army, othersArmy :dict):
-        owner = my_army.owner
-        my_army.owner = None
-        self.MY_ARMY = copy.deepcopy(my_army)
-        my_army.owner = owner
-        owner = othersArmy.owner
-        othersArmy.owner = None
-        self.OTHER_ARMY = copy.deepcopy(othersArmy)
-        othersArmy.owner = owner
+
+        self.MY_ARMY.units = copy.deepcopy(my_army.units)
+        for k in othersArmy.keys():
+            self.OTHER_ARMY[k].units = copy.deepcopy(othersArmy[k].units)
 
 
     @staticmethod
