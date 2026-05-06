@@ -1,0 +1,30 @@
+Reseaux
+
+a & b) Lors d'une mise à jour une IA recoi toutes les armées connues par l'emmeteur, l'IA locale à donc la possibilité d'intéragir avec les armées énnemies car elle les a en locales
+
+c) Les IA envoies leur mise à jour à chaque tick sans attendre la mise à jour de quelqu'un d'autre.
+
+d) Quand A envoie une mise à jour à B, il envoye son armées (A) et toutes les autres armées qu'il connait (donc aussi l'armée B), donc B finit par recevoir ses propres propriété de la part de A.
+
+e) Les machines envoient leur mise à jour à chaque tick, la machine qui recois les paquets doit le recevoir théoriquement au tick suivant ce qui permet d'avoir une simulation en "temps réels"
+
+f) Le choix d’identifier chaque armée par un ID unique permet d’éviter les ambiguïtés lors des échanges réseau et garantit la cohérence des données entre clients. La structuration en map, armées et unités facilite la sérialisation des données pour leur transmission. Ainsi, chaque mise à jour permet de synchroniser de manière fiable l’état du jeu sur l’ensemble des machines.
+
+
+
+
+Systeme
+
+a & b) Une IA ne peut faire que 2 actions, déplacer une de ses unités sur la carte et infliger des dégats à une unité ennemies. Le fait d'infliger un dégat provenant de l'attaque d'une unité alliée sur une unité ennemie.
+En outre la synchnisation du jeu est n'est pas faite par l'IA elle meme donc elle ne peut pas déplacer ou
+
+c)Si aucune mise à jour n'est reçue le jeu continue à tourner tick par tick a faire la simulation, l'IA continue à donné des ordres et envoyé des mises à jour.
+
+
+d) Une IA avec la copie locale ne peut pas infligé des dégats a une unité morte, et une unité morte ne peut pas infligé de dégats.
+
+e)
+
+
+f) 
+
